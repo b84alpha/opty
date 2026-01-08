@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { prisma } from "../lib/prisma";
 import crypto from "crypto";
 import { ApiKeyStatus } from "@prisma/client";
@@ -18,7 +19,7 @@ async function getDefaultOrgId() {
   return org.id;
 }
 
-export async function createProject(formData: FormData) {
+export async function createProject(formData: FormData): Promise<void> {
   const name = (formData.get("name") as string | null)?.trim() || "New Project";
   const orgId = await getDefaultOrgId();
   const project = await prisma.project.create({
@@ -29,7 +30,7 @@ export async function createProject(formData: FormData) {
   });
   revalidatePath("/projects");
   revalidatePath("/logs");
-  return { projectId: project.id, name: project.name };
+  redirect(`/projects/${project.id}/keys`);
 }
 
 export async function createApiKey(projectId: string) {
