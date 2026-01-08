@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { prisma } from "../lib/prisma";
-import { createProject } from "../actions";
+import { createProject } from "../actions.ts";
 import { ApiKeyStatus } from "@prisma/client";
 
 export default async function ProjectsPage() {
