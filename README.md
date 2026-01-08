@@ -49,26 +49,22 @@ Key variables (see `.env.example`):
 - `DASHBOARD_ORIGIN` – allowed origin for CORS
 - `NEXT_PUBLIC_GATEWAY_URL` – used by the dashboard health check
 - `OPENAI_API_KEY` – required for the gateway proxy
+- `GOOGLE_API_KEY` – required for Google fallback + embeddings
 - `REDIS_URL` – future use
 
-## Sprint 1 usage
+## Usage
 - Create a project and API key in the dashboard (`/projects` → create → open project → Generate key). Copy the key when shown; it is displayed once.
 - Disable keys from `/projects/[id]/keys` when needed.
 - View request activity in `/logs` (last 100 per project).
-- Example gateway call (non-stream):
-```
-curl http://localhost:4000/v1/chat/completions \
-  -H "Authorization: Bearer <KEY>" \
-  -H "Content-Type: application/json" \
-  -d '{"messages":[{"role":"user","content":"hi"}],"stream":false}'
-```
-- Streaming example (SSE):
-```
-curl -N http://localhost:4000/v1/chat/completions \
-  -H "Authorization: Bearer <KEY>" \
-  -H "Content-Type: application/json" \
-  -d '{"messages":[{"role":"user","content":"hi"}],"stream":true}'
-```
+- Gateway curl examples:
+  1) FAST chat (default OpenAI) non-stream  
+  `curl http://localhost:4000/v1/chat/completions -H "Authorization: Bearer <KEY>" -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"hello from fast"}],"stream":false}'`
+  2) SMART chat (OpenAI smart tier)  
+  `curl http://localhost:4000/v1/chat/completions -H "Authorization: Bearer <KEY>" -H "Content-Type: application/json" -H "x-optyx-tier: smart" -d '{"messages":[{"role":"user","content":"hello from smart"}],"stream":false}'`
+  3) Streaming chat  
+  `curl -N http://localhost:4000/v1/chat/completions -H "Authorization: Bearer <KEY>" -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"streaming please"}],"stream":true}'`
+  4) Embeddings (defaults to Google embeddings)  
+  `curl http://localhost:4000/v1/embeddings -H "Authorization: Bearer <KEY>" -H "Content-Type: application/json" -d '{"input":"embedding text"}'`
 
 ## CI
 Basic GitHub Actions workflow at `.github/workflows/ci.yml` runs install, Prisma generate, and build.
