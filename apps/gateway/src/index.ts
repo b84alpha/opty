@@ -158,10 +158,7 @@ async function logRequestFinish(
     metadataPatch?: Prisma.InputJsonValue;
   }
 ) {
-  const metadata =
-    data.metadataPatch != null
-      ? { ...(baseMetadata as Record<string, unknown>), ...(data.metadataPatch as Record<string, unknown>) }
-      : undefined;
+  const metadata = mergeInputJson(baseMetadata, data.metadataPatch);
 
   const updateData: Prisma.RequestsLogUpdateInput = {
     status: data.status,
@@ -221,6 +218,21 @@ function modelNotAllowedError(resultBody: any) {
   if (type?.toLowerCase().includes("model")) return true;
   if (message.toLowerCase().includes("model")) return true;
   return false;
+}
+
+function mergeInputJson(
+  base?: Prisma.InputJsonValue,
+  patch?: Prisma.InputJsonValue
+): Prisma.InputJsonValue | undefined {
+  const safeBase =
+    base && typeof base === "object" && !Array.isArray(base) ? base : {};
+  const safePatch =
+    patch && typeof patch === "object" && !Array.isArray(patch) ? patch : {};
+  const merged = {
+    ...(safeBase as Record<string, unknown>),
+    ...(safePatch as Record<string, unknown>),
+  };
+  return Object.keys(merged).length ? (merged as Prisma.InputJsonValue) : undefined;
 }
 
 async function streamToClient(params: {
@@ -522,6 +534,9 @@ async function start() {
         tier === "FAST" && primaryProvider === "openai" && FAST_FALLBACK_MODEL;
       let useFallback = false;
       let fallbackResult: ChatResult | null = null;
+      const combinePatch = (next?: Prisma.InputJsonValue) => {
+        metadataPatch = mergeInputJson(metadataPatch, next);
+      };
 
       // Determine whether to fallback (only FAST)
       if (
@@ -578,14 +593,14 @@ async function start() {
             bodyPayload?.error ??
             primaryError?.message ??
             "unknown";
-          metadataPatch = {
+          combinePatch({
             fallback: {
               from: "openai",
               to: "google",
               primaryStatus,
               primaryError: primaryErrorSummary,
             },
-          };
+          });
 
           try {
             fallbackResult = await adapters.google.chatCompletions({
@@ -665,10 +680,12 @@ async function start() {
       }
 
       if (useFallback) {
-        baseMetadata["fallback"] = {
-          from: primaryProvider,
-          reason: "primary_failed",
-        };
+        combinePatch({
+          fallback: {
+            from: primaryProvider,
+            reason: "primary_failed",
+          },
+        });
       }
 
       if (finalResult.kind === "stream") {
