@@ -1,0 +1,17 @@
+{
+  "name": "gateway",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc --noEmit",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fastify/cors": "^8.4.0",
+    "@optyx/shared": "workspace:*",
+    "@prisma/client": "^5.10.2",
+    "dotenv": "^16.4.5",
+    "fastify": "^4.26.2"
+  }
+}

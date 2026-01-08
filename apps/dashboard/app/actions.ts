@@ -1,0 +1,66 @@
+"use server";
+
+import { revalidatePath } from "next/cache";
+import { prisma } from "../lib/prisma";
+import crypto from "crypto";
+import { ApiKeyStatus } from "@prisma/client";
+
+function hashKey(key: string) {
+  return crypto.createHash("sha256").update(key).digest("hex");
+}
+
+async function getDefaultOrgId() {
+  const existing = await prisma.org.findFirst();
+  if (existing) return existing.id;
+  const org = await prisma.org.create({
+    data: { name: "Default Org" },
+  });
+  return org.id;
+}
+
+export async function createProject(formData: FormData) {
+  const name = (formData.get("name") as string | null)?.trim() || "New Project";
+  const orgId = await getDefaultOrgId();
+  const project = await prisma.project.create({
+    data: {
+      name,
+      orgId,
+    },
+  });
+  revalidatePath("/projects");
+  revalidatePath("/logs");
+  return { projectId: project.id, name: project.name };
+}
+
+export async function createApiKey(projectId: string) {
+  if (!projectId) throw new Error("projectId required");
+  const project = await prisma.project.findUnique({ where: { id: projectId } });
+  if (!project) throw new Error("Project not found");
+
+  const random = crypto.randomBytes(32).toString("hex");
+  const plainKey = `optyx_${random}`;
+  const prefix = plainKey.slice(0, 10);
+  const hashedKey = hashKey(plainKey);
+
+  await prisma.apiKey.create({
+    data: {
+      projectId,
+      hashedKey,
+      prefix,
+      status: ApiKeyStatus.ACTIVE,
+    },
+  });
+
+  revalidatePath(`/projects/${projectId}/keys`);
+  return { apiKey: plainKey, prefix };
+}
+
+export async function disableApiKey(keyId: string, projectId: string) {
+  if (!keyId) throw new Error("apiKeyId required");
+  await prisma.apiKey.update({
+    where: { id: keyId },
+    data: { status: ApiKeyStatus.DISABLED },
+  });
+  revalidatePath(`/projects/${projectId}/keys`);
+  return { ok: true };
+}

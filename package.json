@@ -1,0 +1,29 @@
+{
+  "name": "optyxmvp",
+  "private": true,
+  "version": "0.0.0",
+  "packageManager": "pnpm@8.15.4",
+  "scripts": {
+    "dev": "turbo run dev --parallel --filter=dashboard --filter=gateway",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "echo \"(no tests yet)\"",
+    "format": "prettier --write \"**/*.{ts,tsx,js,json,md}\"",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate deploy",
+    "prisma:migrate:dev": "prisma migrate dev",
+    "prisma:seed": "tsx prisma/seed.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.19",
+    "prettier": "^3.2.5",
+    "prisma": "^5.10.2",
+    "turbo": "^1.11.3",
+    "tsx": "^4.7.1",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.10.2"
+  }
+}

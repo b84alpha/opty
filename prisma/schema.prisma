@@ -1,0 +1,302 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum MembershipRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum ApiKeyStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum LedgerEntryType {
+  DEPOSIT
+  CHARGE
+  ADJUSTMENT
+}
+
+model Org {
+  id                  String               @id @default(cuid())
+  name                String
+  createdAt           DateTime             @default(now()) @map("created_at")
+  updatedAt           DateTime             @updatedAt @map("updated_at")
+  memberships         Membership[]
+  projects            Project[]
+  providerCredentials ProviderCredential[]
+
+  @@map("orgs")
+}
+
+model User {
+  id          String        @id @default(cuid())
+  email       String        @unique
+  name        String?
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+  memberships Membership[]
+
+  @@map("users")
+}
+
+model Membership {
+  id        String         @id @default(cuid())
+  userId    String         @map("user_id")
+  orgId     String         @map("org_id")
+  role      MembershipRole
+  createdAt DateTime       @default(now()) @map("created_at")
+  updatedAt DateTime       @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id])
+  org  Org  @relation(fields: [orgId], references: [id])
+
+  @@unique([userId, orgId])
+  @@map("memberships")
+}
+
+model Project {
+  id                  String               @id @default(cuid())
+  orgId               String               @map("org_id")
+  name                String
+  createdAt           DateTime             @default(now()) @map("created_at")
+  updatedAt           DateTime             @updatedAt @map("updated_at")
+
+  org                 Org                  @relation(fields: [orgId], references: [id])
+  apiKeys              ApiKey[]
+  routes               Route[]
+  policies             Policy[]
+  requestsLog          RequestsLog[]
+  aggregates           AggregatesDaily[]
+  providerCredentials  ProviderCredential[]
+  wallets              ProjectWallet[]
+  ledgerEntries        LedgerEntry[]
+  onchainDeposits      OnchainDeposit[]
+
+  @@map("projects")
+}
+
+model ApiKey {
+  id         String       @id @default(cuid())
+  projectId  String       @map("project_id")
+  hashedKey  String       @map("hashed_key")
+  prefix     String
+  status     ApiKeyStatus @default(ACTIVE)
+  lastUsedAt DateTime?    @map("last_used_at")
+  createdAt  DateTime     @default(now()) @map("created_at")
+  updatedAt  DateTime     @updatedAt @map("updated_at")
+
+  project    Project      @relation(fields: [projectId], references: [id])
+  requests   RequestsLog[]
+
+  @@index([projectId])
+  @@index([prefix])
+  @@unique([hashedKey])
+  @@map("api_keys")
+}
+
+model Provider {
+  id          String               @id @default(cuid())
+  provider    String               @unique
+  displayName String               @map("display_name")
+  createdAt   DateTime             @default(now()) @map("created_at")
+  updatedAt   DateTime             @updatedAt @map("updated_at")
+
+  credentials ProviderCredential[]
+
+  @@map("providers")
+}
+
+model ProviderCredential {
+  id              String   @id @default(cuid())
+  providerId      String   @map("provider_id")
+  orgId           String?  @map("org_id")
+  projectId       String?  @map("project_id")
+  encryptedConfig String   @map("encrypted_config")
+  scope           String   @default("org")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  provider Provider @relation(fields: [providerId], references: [id])
+  org      Org?     @relation(fields: [orgId], references: [id])
+  project  Project? @relation(fields: [projectId], references: [id])
+
+  @@index([providerId])
+  @@index([orgId])
+  @@index([projectId])
+  @@map("provider_credentials")
+}
+
+model Route {
+  id        String      @id @default(cuid())
+  projectId String      @map("project_id")
+  name      String
+  tag       String?
+  createdAt DateTime    @default(now()) @map("created_at")
+  updatedAt DateTime    @updatedAt @map("updated_at")
+
+  project   Project     @relation(fields: [projectId], references: [id])
+  versions  RouteVersion[]
+
+  // Inverse side for RequestsLog.route (named relation to avoid ambiguity)
+  requestsLogs RequestsLog[] @relation("RouteRequestsLogs")
+
+  @@index([projectId])
+  @@map("routes")
+}
+
+model RouteVersion {
+  id        String   @id @default(cuid())
+  routeId   String   @map("route_id")
+  version   Int
+  config    Json
+  createdAt DateTime @default(now()) @map("created_at")
+
+  route Route @relation(fields: [routeId], references: [id])
+
+  @@unique([routeId, version])
+  @@map("route_versions")
+}
+
+model Policy {
+  id         String   @id @default(cuid())
+  projectId  String   @map("project_id")
+  name       String
+  definition Json     @map("definition_json")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id])
+
+  @@index([projectId])
+  @@map("policies")
+}
+
+model RequestsLog {
+  id         String    @id @default(cuid())
+  projectId  String    @map("project_id")
+  apiKeyId   String?   @map("api_key_id")
+  routeId    String?   @map("route_id")
+  routeTag   String?   @map("route_tag")
+
+  tier       String?
+  provider   String?
+  model      String?
+  status     String?
+
+  startedAt  DateTime  @default(now()) @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+  latencyMs  Int?      @map("latency_ms")
+  httpStatus Int?      @map("http_status")
+  errorClass String?   @map("error_class")
+  tokensIn   Int?      @map("tokens_in")
+  tokensOut  Int?      @map("tokens_out")
+
+  estimatedCostUsdc Decimal? @map("estimated_cost_usdc") @db.Decimal(18, 6)
+  fallbackUsed      Boolean  @default(false) @map("fallback_used")
+  retryCount        Int      @default(0) @map("retry_count")
+
+  metadata   Json     @default("{}") @map("metadata_json")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id])
+  apiKey  ApiKey?  @relation(fields: [apiKeyId], references: [id])
+
+  // Named relation to Route.requestsLogs
+  route   Route?   @relation("RouteRequestsLogs", fields: [routeId], references: [id])
+
+  @@index([projectId])
+  @@index([apiKeyId])
+  @@index([routeId])
+  @@map("requests_log")
+}
+
+model AggregatesDaily {
+  id        String   @id @default(cuid())
+  projectId String   @map("project_id")
+  date      DateTime @map("date") @db.Date
+  rollup    Json     @map("rollup_json")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id])
+
+  @@unique([projectId, date])
+  @@map("aggregates_daily")
+}
+
+model ProviderModelPrice {
+  id              String   @id @default(cuid())
+  provider        String
+  model           String
+  inputPerMtok    Decimal  @map("input_per_mtok") @db.Decimal(18, 6)
+  outputPerMtok   Decimal  @map("output_per_mtok") @db.Decimal(18, 6)
+  cacheHitPerMtok Decimal? @map("cache_hit_per_mtok") @db.Decimal(18, 6)
+  effectiveFrom   DateTime @map("effective_from")
+  source          String
+  version         Int
+  isActive        Boolean  @default(true) @map("is_active")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@index([provider, model, isActive])
+  @@map("provider_model_prices")
+}
+
+model ProjectWallet {
+  id             String   @id @default(cuid())
+  projectId      String   @map("project_id")
+  chain          String
+  asset          String
+  depositAddress String   @map("deposit_address")
+  status         String
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id])
+
+  @@index([projectId])
+  @@map("project_wallets")
+}
+
+model LedgerEntry {
+  id           String          @id @default(cuid())
+  projectId    String          @map("project_id")
+  type         LedgerEntryType
+  amount       Decimal         @db.Decimal(18, 6)
+  currency     String          @default("USDC")
+  reference    String
+  metadataJson Json            @map("metadata_json")
+  createdAt    DateTime        @default(now()) @map("created_at")
+
+  project Project @relation(fields: [projectId], references: [id])
+
+  @@index([projectId])
+  @@map("ledger_entries")
+}
+
+model OnchainDeposit {
+  id          String    @id @default(cuid())
+  projectId   String    @map("project_id")
+  chain       String
+  txHash      String    @unique @map("tx_hash")
+  amount      Decimal   @db.Decimal(18, 6)
+  currency    String    @default("USDC")
+  confirmedAt DateTime? @map("confirmed_at")
+  rawJson     Json      @map("raw_json")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id])
+
+  @@index([projectId])
+  @@map("onchain_deposits")
+}
