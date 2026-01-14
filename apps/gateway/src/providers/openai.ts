@@ -137,16 +137,17 @@ function toResponsesPayload(params: { body: any; model: string; stream: boolean 
   const body = params.body || {};
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const inputMessages = toResponsesInput(messages);
+  const maxOutputTokens =
+    body.max_completion_tokens ??
+    body.max_output_tokens ??
+    body.max_tokens ??
+    120;
   const payload: Record<string, any> = {
     model: params.model,
     input: inputMessages,
-    max_output_tokens:
-      body.max_completion_tokens ??
-      body.max_output_tokens ??
-      body.max_tokens ??
-      120,
+    max_output_tokens: maxOutputTokens,
     stream: params.stream || undefined,
-    reasoning: normalizeReasoning(body.reasoning),
+    reasoning: maxOutputTokens <= 100 ? { effort: "low" } : normalizeReasoning(body.reasoning),
     text: { format: { type: "text" } },
   };
   if (body.temperature != null) payload.temperature = body.temperature;
@@ -424,14 +425,23 @@ async function chatCompletions(params: {
                 })()
               : `resp-${Date.now()}`;
           const created = Math.floor(Date.now() / 1000);
-          const finishChunk = {
-            id,
-            object: "chat.completion.chunk",
-            created,
-            model: params.model,
-            choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
-          };
-          sse.push(`data: ${JSON.stringify(finishChunk)}\n\n`);
+          if (!sawText) {
+            const errPayload = {
+              object: "error",
+              message: "Upstream returned no text output. Increase max_tokens or lower reasoning effort.",
+              code: "OUTPUT_TRUNCATED",
+            };
+            sse.push(`data: ${JSON.stringify(errPayload)}\n\n`);
+          } else {
+            const finishChunk = {
+              id,
+              object: "chat.completion.chunk",
+              created,
+              model: params.model,
+              choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
+            };
+            sse.push(`data: ${JSON.stringify(finishChunk)}\n\n`);
+          }
           sse.push("data: [DONE]\n\n");
           doneSent = true;
         }
@@ -449,14 +459,21 @@ async function chatCompletions(params: {
   const usage = parseResponsesUsage(json);
   const body = makeChatLikeResponse({ json, model: params.model });
   const assistantText = extractResponseText(json);
-  const status = assistantText ? response.status : 502;
+  const finishReason = finishReasonFromResponse(json);
+  const status =
+    assistantText && response.status < 300
+      ? response.status
+      : finishReason === "length" || finishReason === "incomplete"
+        ? 422
+        : 502;
   const finalBody =
     assistantText && status < 300
       ? body
       : {
           error: {
-            message: "Upstream returned no text output",
-            type: "bad_gateway",
+            message: "Upstream returned no text output. Increase max_tokens or lower reasoning effort.",
+            type: "invalid_request_error",
+            code: "OUTPUT_TRUNCATED",
           },
         };
   return {

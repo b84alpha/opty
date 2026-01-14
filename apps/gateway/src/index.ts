@@ -50,6 +50,34 @@ type ChatCompletionBody = {
   [key: string]: unknown;
 };
 
+const allowedChatBodyKeys = new Set<string>([
+  "model",
+  "messages",
+  "stream",
+  "temperature",
+  "top_p",
+  "max_tokens",
+  "max_completion_tokens",
+  "max_output_tokens",
+  "reasoning",
+  "response_format",
+  "stream_options",
+  "tools",
+  "tool_choice",
+  "functions",
+  "function_call",
+  "stop",
+  "n",
+  "presence_penalty",
+  "frequency_penalty",
+  "logit_bias",
+  "logprobs",
+  "top_logprobs",
+  "user",
+  "metadata",
+  "seed",
+]);
+
 function hashApiKey(key: string) {
   return crypto.createHash("sha256").update(key).digest("hex");
 }
@@ -687,6 +715,18 @@ function registerRoutes(app: FastifyInstance) {
         });
       }
 
+      for (const key of Object.keys(body)) {
+        if (!allowedChatBodyKeys.has(key)) {
+          return reply.status(400).send({
+            error: {
+              message: `Unknown parameter: ${key}`,
+              type: "invalid_request_error",
+              code: "UNKNOWN_PARAMETER",
+            },
+          });
+        }
+      }
+
       const routeTagHeader = (request.headers["x-route-tag"] as string | undefined)?.toLowerCase();
       const tierHeader = (request.headers["x-optyx-tier"] as string | undefined)?.toLowerCase();
 
@@ -737,7 +777,15 @@ function registerRoutes(app: FastifyInstance) {
 
       reply.header("x-optyx-resolved-model", aliasOf ? resolvedModel : logicalModel);
 
-      const upstreamBody = { ...body, model: logicalModel };
+      const upstreamBody: Record<string, any> = { ...body, model: logicalModel };
+
+      // GPT-5 compatibility: accept legacy max_tokens and map to max_completion_tokens when missing
+      if (provider === "openai" && logicalModel.startsWith("gpt-5")) {
+        if (upstreamBody.max_completion_tokens == null && upstreamBody.max_tokens != null) {
+          upstreamBody.max_completion_tokens = upstreamBody.max_tokens;
+        }
+        delete upstreamBody.max_tokens;
+      }
 
       const { id: logId, baseMetadata } = await logRequestStart({
         request,

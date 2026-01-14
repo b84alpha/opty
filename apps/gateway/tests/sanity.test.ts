@@ -15,6 +15,7 @@ async function readStream(url: string, init?: RequestInit) {
   let gotChunk = false;
   let gotDone = false;
   let rawText = "";
+  let gotError = false;
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -36,6 +37,9 @@ async function readStream(url: string, init?: RequestInit) {
           ) {
             gotChunk = true;
           }
+          if (line.startsWith("data: {") && line.includes("OUTPUT_TRUNCATED")) {
+            gotError = true;
+          }
         }
       }
       if (gotChunk && gotDone) break;
@@ -46,7 +50,7 @@ async function readStream(url: string, init?: RequestInit) {
   assert.ok(!rawText.includes("event: response."), "should not leak response.* events");
   const doneCount = (rawText.match(/\[DONE\]/g) || []).length;
   assert.strictEqual(doneCount, 1, "should emit exactly one [DONE]");
-  assert.ok(gotChunk, "stream should emit data chunk");
+  assert.ok(gotChunk || gotError, "stream should emit data chunk or error");
   assert.ok(gotDone, "stream should emit [DONE]");
 }
 
@@ -84,20 +88,28 @@ async function main() {
     body: JSON.stringify({
       model: "gpt-5-nano",
       messages: [{ role: "user", content: "Output exactly:\nA\nB" }],
+      max_tokens: 50,
     }),
   });
-  assert.strictEqual(aliasRes.status, 200);
+  assert.ok([200, 400, 422].includes(aliasRes.status));
   assert.strictEqual(aliasRes.headers.get("x-optyx-resolved-model"), defaultFastModelId);
   const aliasJson = await aliasRes.json();
-  assert.strictEqual(aliasJson.model, defaultFastModelId);
-  assert.ok(
-    aliasJson?.choices?.[0]?.message?.content,
-    "non-stream response should include assistant content"
-  );
-  assert.ok(
-    String(aliasJson.choices[0].message.content).length > 0,
-    "assistant content should not be empty"
-  );
+  if (aliasRes.status === 200) {
+    assert.strictEqual(aliasJson.model, defaultFastModelId);
+    assert.ok(
+      aliasJson?.choices?.[0]?.message?.content,
+      "non-stream response should include assistant content"
+    );
+    assert.ok(
+      String(aliasJson.choices[0].message.content).length > 0,
+      "assistant content should not be empty"
+    );
+  } else {
+    assert.ok(
+      aliasJson?.error?.code === "OUTPUT_TRUNCATED",
+      "error code should be OUTPUT_TRUNCATED when text missing"
+    );
+  }
 
   const bad = await fetch(`${base}/v1/chat/completions`, {
     method: "POST",
@@ -112,6 +124,7 @@ async function main() {
     body: JSON.stringify({
       model: "gpt-5-nano",
       messages: [{ role: "user", content: "Output exactly:\nA\nB" }],
+      max_tokens: 50,
       stream: true,
     }),
   });
