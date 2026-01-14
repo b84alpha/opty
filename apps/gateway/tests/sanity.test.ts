@@ -1,62 +1,93 @@
 import assert from "assert";
 import { AddressInfo } from "net";
+import { request } from "http";
 import { defaultFastModelId } from "@optyx/shared";
 import { buildApp } from "../src/index";
 
 const API_KEY = "optyx_seed_demo_key_change_me";
 
 async function readStream(url: string, init?: RequestInit) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 4000);
-  const res = await fetch(url, { ...init, signal: controller.signal });
-  assert.strictEqual(res.status, 200);
-  const headers = res.headers;
-  assert.strictEqual(headers.get("content-type"), "text/event-stream; charset=utf-8");
-  assert.ok((headers.get("cache-control") || "").includes("no-cache"));
-  assert.ok((headers.get("connection") || "").includes("keep-alive"));
-  const reader = res.body!.getReader();
-  const decoder = new TextDecoder();
+  const timeout = setTimeout(() => {
+    throw new Error("stream timeout");
+  }, 4000);
+
+  const headers = {
+    ...(init?.headers as Record<string, string> | undefined),
+    Origin: "http://localhost:3000",
+  };
+
+  const { hostname, port, pathname } = new URL(url);
+
+  const chunks: Buffer[] = [];
+  let statusCode = 0;
+  const resHeaders: Record<string, string | string[]> = await new Promise((resolve, reject) => {
+    const req = request(
+      {
+        hostname,
+        port,
+        path: pathname,
+        method: init?.method || "POST",
+        headers,
+      },
+      (res) => {
+        statusCode = res.statusCode || 0;
+        res.on("data", (d) => chunks.push(Buffer.from(d)));
+        res.on("end", () => resolve(res.headers as any));
+      }
+    );
+    req.on("error", reject);
+    req.end(init?.body as any);
+  });
+
+  clearTimeout(timeout);
+
+  const rawText = Buffer.concat(chunks).toString("utf8");
+  assert.strictEqual(statusCode, 200);
+  const getHeader = (key: string) => {
+    const val = resHeaders[key.toLowerCase()];
+    if (Array.isArray(val)) return val[0];
+    return val || null;
+  };
+  assert.strictEqual(getHeader("content-type"), "text/event-stream; charset=utf-8");
+  assert.ok((getHeader("cache-control") || "").includes("no-cache"));
+  assert.ok((getHeader("connection") || "").includes("keep-alive"));
+  assert.strictEqual(
+    getHeader("access-control-allow-origin"),
+    "http://localhost:3000",
+    "missing ACAO header"
+  );
+
+  const text = rawText;
+  // ensure framing is double-newline separated
+  assert.ok(text.includes("\n\n"), "SSE framing must include blank lines");
+  const lines = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+
   let gotChunk = false;
   let gotDone = false;
-  let rawText = "";
   let gotError = false;
   let sawNewline = false;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) {
-        const text = decoder.decode(value);
-        rawText += text;
-        // ensure framing is double-newline separated
-        assert.ok(text.includes("\n\n"), "SSE framing must include blank lines");
-        const lines = text
-          .split("\n")
-          .map((l) => l.trim())
-          .filter(Boolean);
-        for (const line of lines) {
-          if (line === "data: [DONE]") gotDone = true;
-          if (
-            line.startsWith("data: {") &&
-            !line.includes("[DONE]") &&
-            line.includes("\"content\"") &&
-            line.includes("\"chat.completion.chunk\"")
-          ) {
-            gotChunk = true;
-            if (line.includes("\\n")) sawNewline = true;
-          }
-          if (line.startsWith("data: {") && line.includes("OUTPUT_TRUNCATED")) {
-            gotError = true;
-          }
-        }
-      }
-      if (gotChunk && gotDone) break;
+
+  for (const line of lines) {
+    if (line === "data: [DONE]") gotDone = true;
+    if (
+      line.startsWith("data: {") &&
+      !line.includes("[DONE]") &&
+      line.includes("\"content\"") &&
+      line.includes("\"chat.completion.chunk\"")
+    ) {
+      gotChunk = true;
+      if (line.includes("\\n")) sawNewline = true;
     }
-  } finally {
-    clearTimeout(timeout);
+    if (line.startsWith("data: {") && line.includes("OUTPUT_TRUNCATED")) {
+      gotError = true;
+    }
   }
-  assert.ok(!rawText.includes("event: response."), "should not leak response.* events");
-  const doneCount = (rawText.match(/\[DONE\]/g) || []).length;
+
+  assert.ok(!text.includes("event: response."), "should not leak response.* events");
+  const doneCount = (text.match(/\[DONE\]/g) || []).length;
   assert.strictEqual(doneCount, 1, "should emit exactly one [DONE]");
   assert.ok(gotChunk || gotError, "stream should emit data chunk or error");
   assert.ok(gotDone, "stream should emit [DONE]");

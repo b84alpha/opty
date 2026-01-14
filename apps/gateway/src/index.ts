@@ -471,10 +471,15 @@ async function streamToClient(params: {
   }
 
   const resolvedHeader = reply.getHeader("x-optyx-resolved-model");
+  const origin = (reply.request.headers.origin as string) || "*";
   const streamHeaders: Record<string, string> = {
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-cache, no-transform",
     Connection: "keep-alive",
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, X-API-Key",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    Vary: "Origin",
   };
   if (resolvedHeader != null) {
     streamHeaders["x-optyx-resolved-model"] = String(resolvedHeader);
@@ -839,10 +844,15 @@ function registerRoutes(app: FastifyInstance) {
       if (process.env.GATEWAY_MOCK === "1" && upstreamBody.stream) {
         // Manual streaming for mock mode to ensure chunks precede [DONE]
         const resolvedHeader = reply.getHeader("x-optyx-resolved-model");
+        const originHeader = (reply.request.headers.origin as string) || "*";
         const streamHeaders: Record<string, string> = {
           "Content-Type": "text/event-stream; charset=utf-8",
-          "Cache-Control": "no-cache",
+          "Cache-Control": "no-cache, no-transform",
           Connection: "keep-alive",
+          "Access-Control-Allow-Origin": originHeader,
+          "Access-Control-Allow-Headers": "Authorization, Content-Type, X-API-Key",
+          "Access-Control-Allow-Methods": "POST, OPTIONS",
+          Vary: "Origin",
         };
         if (resolvedHeader != null) {
           streamHeaders["x-optyx-resolved-model"] = String(resolvedHeader);

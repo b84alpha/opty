@@ -10,8 +10,18 @@ async function handleJsonResponse(res: Response) {
   return json;
 }
 
-export async function fetchModels() {
-  const res = await fetch(`${GATEWAY_URL}/v1/models`);
+function authHeaders(apiKey?: string) {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  return headers;
+}
+
+export async function fetchModels(apiKey?: string) {
+  const res = await fetch(`${GATEWAY_URL}/v1/models`, {
+    headers: authHeaders(apiKey),
+  });
   return handleJsonResponse(res);
 }
 
@@ -19,12 +29,16 @@ export async function chatCompletion(params: {
   messages: Array<{ role: string; content: string }>;
   model?: string;
   max_tokens?: number;
+  apiKey?: string | null;
 }) {
+  if (!params.apiKey) {
+    const err: any = new Error("Missing API key");
+    err.payload = { error: { message: "Missing API key" } };
+    throw err;
+  }
   const res = await fetch(`${GATEWAY_URL}/v1/chat/completions`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
+    headers: authHeaders(params.apiKey || undefined),
     body: JSON.stringify({
       model: params.model ?? "gpt-5-nano",
       messages: params.messages,
@@ -40,18 +54,24 @@ export async function* chatCompletionStream(params: {
   messages: Array<{ role: string; content: string }>;
   model?: string;
   max_tokens?: number;
+  apiKey?: string | null;
+  signal?: AbortSignal;
 }) {
+  if (!params.apiKey) {
+    const err: any = new Error("Missing API key");
+    err.payload = { error: { message: "Missing API key" } };
+    throw err;
+  }
   const res = await fetch(`${GATEWAY_URL}/v1/chat/completions`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
+    headers: authHeaders(params.apiKey || undefined),
     body: JSON.stringify({
       model: params.model ?? "gpt-5-nano",
       messages: params.messages,
       max_tokens: params.max_tokens ?? 200,
       stream: true,
     }),
+    signal: params.signal,
   });
 
   if (!res.body) {
@@ -84,7 +104,7 @@ export async function* chatCompletionStream(params: {
         if (typeof content === "string") {
           yield content;
         }
-      } catch (err) {
+      } catch {
         // ignore malformed lines
       }
     }
