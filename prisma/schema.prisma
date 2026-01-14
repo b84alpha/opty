@@ -66,6 +66,9 @@ model Project {
   id                  String               @id @default(cuid())
   orgId               String               @map("org_id")
   name                String
+  defaultTier         String               @default("fast") @map("default_tier")
+  allowedModels       Json                 @default("[]") @map("allowed_models")
+  allowAllModels      Boolean              @default(true) @map("allow_all_models")
   createdAt           DateTime             @default(now()) @map("created_at")
   updatedAt           DateTime             @updatedAt @map("updated_at")
 

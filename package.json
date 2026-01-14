@@ -9,6 +9,7 @@
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "test": "echo \"(no tests yet)\"",
+    "test:gateway": "pnpm -C apps/gateway test",
     "format": "prettier --write \"**/*.{ts,tsx,js,json,md}\"",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate deploy",

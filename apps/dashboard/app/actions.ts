@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { prisma } from "../lib/prisma";
 import crypto from "crypto";
 import { ApiKeyStatus } from "@prisma/client";
+import { modelCatalog, defaultFastModelId, defaultSmartModelId } from "@optyx/shared";
 
 function hashKey(key: string) {
   return crypto.createHash("sha256").update(key).digest("hex");
@@ -64,4 +65,24 @@ export async function disableApiKey(keyId: string, projectId: string) {
   });
   revalidatePath(`/projects/${projectId}/keys`);
   return { ok: true };
+}
+
+export async function updateProjectSettings(projectId: string, formData: FormData) {
+  if (!projectId) throw new Error("projectId required");
+  const defaultTierRaw = (formData.get("defaultTier") as string | null)?.toLowerCase() || "fast";
+  const allowAll = formData.get("allowAllModels") === "on";
+  const chosen = formData.getAll("allowedModels").map((v) => String(v));
+  const allowedModels = allowAll ? modelCatalog.map((m) => m.id) : chosen;
+  const defaultTier = defaultTierRaw === "smart" ? "smart" : "fast";
+  await prisma.project.update({
+    where: { id: projectId },
+    data: {
+      defaultTier,
+      allowedModels,
+      allowAllModels: allowAll,
+    },
+  });
+  revalidatePath(`/projects/${projectId}/settings`);
+  revalidatePath(`/projects/${projectId}/keys`);
+  revalidatePath("/logs");
 }

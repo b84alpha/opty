@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "build": "tsc --noEmit",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "pnpm build && node tests/run.js"
   },
   "dependencies": {
     "@fastify/cors": "^8.4.0",
@@ -13,5 +14,9 @@
     "@prisma/client": "^5.10.2",
     "dotenv": "^16.4.5",
     "fastify": "^4.26.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.19",
+    "ts-node": "^10.9.2"
   }
 }

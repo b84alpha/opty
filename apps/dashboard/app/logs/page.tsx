@@ -22,6 +22,7 @@ type SerializableLog = {
   createdAt: string;
   latencyMs: number | null;
   apiKeyPrefix: string | null;
+  fallbackUsed: boolean | null;
 };
 
 export default async function LogsPage({ searchParams }: LogsPageProps) {
@@ -32,11 +33,19 @@ export default async function LogsPage({ searchParams }: LogsPageProps) {
 
   const projectId =
     (searchParams?.projectId as string | undefined) || projects[0]?.id;
+  const providerFilter = (searchParams?.provider as string | undefined) || "";
+  const modelFilter = (searchParams?.model as string | undefined) || "";
+  const tierFilter = (searchParams?.tier as string | undefined) || "";
 
   const logs: SerializableLog[] = projectId
     ? (
         await prisma.requestsLog.findMany({
-          where: { projectId },
+          where: {
+            projectId,
+            provider: providerFilter || undefined,
+            model: modelFilter || undefined,
+            tier: tierFilter || undefined,
+          },
           orderBy: { createdAt: "desc" },
           include: { apiKey: true },
           take: 100,
@@ -57,6 +66,7 @@ export default async function LogsPage({ searchParams }: LogsPageProps) {
         createdAt: log.createdAt.toISOString(),
         latencyMs: log.latencyMs ?? null,
         apiKeyPrefix: log.apiKey?.prefix ?? null,
+        fallbackUsed: log.fallbackUsed ?? null,
       }))
     : [];
 
@@ -81,8 +91,36 @@ export default async function LogsPage({ searchParams }: LogsPageProps) {
           )}
         </div>
 
+        <form className="form-inline" style={{ marginBottom: 12 }}>
+          <input type="hidden" name="projectId" value={projectId} />
+          <select
+            name="provider"
+            defaultValue={providerFilter}
+            className="select"
+          >
+            <option value="">All providers</option>
+            <option value="openai">OpenAI</option>
+            <option value="google">Google</option>
+          </select>
+          <input
+            className="input"
+            name="model"
+            placeholder="Model id"
+            defaultValue={modelFilter}
+            style={{ maxWidth: 200 }}
+          />
+          <select name="tier" defaultValue={tierFilter} className="select">
+            <option value="">All tiers</option>
+            <option value="FAST">FAST</option>
+            <option value="SMART">SMART</option>
+          </select>
+          <button className="button" type="submit">
+            Apply filters
+          </button>
+        </form>
+
         {projectId ? (
-          <table className="table" style={{ marginTop: 16 }}>
+          <table className="table" style={{ marginTop: 8 }}>
             <thead>
               <tr>
                 <th>Time</th>
@@ -93,6 +131,7 @@ export default async function LogsPage({ searchParams }: LogsPageProps) {
                 <th>Cost</th>
                 <th>Latency</th>
                 <th>API key</th>
+                <th>Fallback</th>
               </tr>
             </thead>
             <tbody>
@@ -132,11 +171,18 @@ export default async function LogsPage({ searchParams }: LogsPageProps) {
                   <td>{formatCost(log.estimatedCostUsdc)}</td>
                   <td>{log.latencyMs != null ? `${log.latencyMs} ms` : "—"}</td>
                   <td>{log.apiKeyPrefix ? `${log.apiKeyPrefix}...` : "—"}</td>
+                  <td>
+                    {log.fallbackUsed ? (
+                      <span className="badge warn">fallback</span>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
                 </tr>
               ))}
               {logs.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="muted">
+                  <td colSpan={9} className="muted">
                     No logs yet for this project.
                   </td>
                 </tr>

@@ -1,5 +1,6 @@
 import { PrismaClient, MembershipRole, ApiKeyStatus, LedgerEntryType } from "@prisma/client";
 import crypto from "crypto";
+import { modelCatalog } from "@optyx/shared";
 
 const prisma = new PrismaClient();
 
@@ -44,7 +45,10 @@ async function main() {
     create: {
       id: "seed-project-1",
       name: "Demo Project",
-      orgId: org.id
+      orgId: org.id,
+      defaultTier: "fast",
+      allowedModels: modelCatalog.map((m) => m.id),
+      allowAllModels: true
     }
   });
 

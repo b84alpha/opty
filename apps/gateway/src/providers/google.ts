@@ -92,7 +92,10 @@ async function chatCompletions(params: {
       response,
       chunkToSse: (chunk: string) => {
         const sse: string[] = [];
-        const lines = chunk.split("\n").filter(Boolean);
+        const lines = chunk
+          .split("\n")
+          .map((l) => l.trim())
+          .filter(Boolean);
         for (const line of lines) {
           try {
             const parsed = JSON.parse(line);
@@ -141,51 +144,67 @@ async function embeddings(params: { body: any; model: string }): Promise<Embeddi
     throw new Error("Unsupported Google embedding model");
   }
   const key = googleHeaders();
-  const input = params.body?.input;
-  const url = `${GOOGLE_API_BASE}/models/${encodeURIComponent(
-    upstreamModel
-  )}:embedContent?key=${key}`;
+  const rawInput = params.body?.input;
+  const inputs: string[] = Array.isArray(rawInput)
+    ? rawInput.map((val) => String(val ?? ""))
+    : [String(rawInput ?? "")];
 
-  const payload = {
-    content: {
-      parts: [
-        {
-          text: Array.isArray(input) ? input.join("\n") : String(input ?? ""),
+  const results = await Promise.all(
+    inputs.map(async (text) => {
+      const url = `${GOOGLE_API_BASE}/models/${encodeURIComponent(
+        upstreamModel
+      )}:embedContent?key=${key}`;
+      const payload = {
+        content: {
+          parts: [
+            {
+              text,
+            },
+          ],
         },
-      ],
-    },
-  };
+      };
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const json = await response.json();
+      if (!response.ok) {
+        throw new Error(
+          json?.error?.message || `Embedding request failed with status ${response.status}`
+        );
+      }
+      const embedding = json?.embedding?.values ?? [];
+      return { embedding, usage: json?.usage };
+    })
+  );
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  const json = await response.json();
-  const embedding = json?.embedding?.values ?? [];
+  const data = results.map((item, index) => ({
+    object: "embedding",
+    embedding: item.embedding,
+    index,
+  }));
+
+  const approximateTokens = inputs.reduce((acc, text) => acc + Math.max(1, Math.round(text.length / 4)), 0);
+  const usage = {
+    prompt_tokens: approximateTokens,
+    completion_tokens: 0,
+    total_tokens: approximateTokens,
+  };
 
   const body = {
     object: "list",
-    data: [
-      {
-        object: "embedding",
-        embedding,
-        index: 0,
-      },
-    ],
+    data,
     model: params.model,
-    usage: json?.usage ?? {
-      prompt_tokens: null,
-      total_tokens: null,
-    },
+    usage,
   };
 
   return {
     provider: "google",
     model: params.model,
-    status: response.status,
+    status: 200,
     body,
-    usage: json?.usage ?? null,
+    usage,
   };
 }
 

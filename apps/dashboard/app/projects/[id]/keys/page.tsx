@@ -60,6 +60,16 @@ export default async function ProjectKeysPage({ params }: Params) {
           </div>
         </div>
 
+        <div className="section" style={{ marginTop: 16 }}>
+          <h4 style={{ marginBottom: 8 }}>Example curl</h4>
+          <pre className="copy-box" style={{ whiteSpace: "pre-wrap" }}>
+{`curl http://localhost:4000/v1/chat/completions \\
+  -H "Authorization: Bearer <YOUR_KEY>" \\
+  -H "Content-Type: application/json" \\
+  -d '{"messages":[{"role":"user","content":"hello"}]}'`}
+          </pre>
+        </div>
+
         <KeysClient projectId={project.id} initialKeys={serializableKeys} />
       </div>
     </div>

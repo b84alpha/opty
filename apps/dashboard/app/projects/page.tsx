@@ -80,6 +80,13 @@ export default async function ProjectsPage() {
                       >
                         API Keys
                       </Link>
+                      <Link
+                        className="button ghost"
+                        style={{ marginLeft: 8 }}
+                        href={`/projects/${project.id}/settings`}
+                      >
+                        Settings
+                      </Link>
                     </td>
                   </tr>
                 );

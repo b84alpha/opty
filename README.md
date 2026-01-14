@@ -50,12 +50,14 @@ Key variables (see `.env.example`):
 - `NEXT_PUBLIC_GATEWAY_URL` – used by the dashboard health check
 - `OPENAI_API_KEY` – required for the gateway proxy
 - `GOOGLE_API_KEY` – required for Google fallback + embeddings
+- `OPTYX_FORCE_OPENAI_FAILOVER` – set to `1` to force FAST requests to use fallback (for testing)
 - `REDIS_URL` – future use
 
 ## Usage
 - Create a project and API key in the dashboard (`/projects` → create → open project → Generate key). Copy the key when shown; it is displayed once.
 - Disable keys from `/projects/[id]/keys` when needed.
 - View request activity in `/logs` (last 100 per project).
+- Configure defaults and model allowlist in `/projects/[id]/settings`.
 - Gateway curl examples:
   1) FAST chat (default OpenAI) non-stream  
   `curl http://localhost:4000/v1/chat/completions -H "Authorization: Bearer <KEY>" -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"hello from fast"}],"stream":false}'`
@@ -65,6 +67,28 @@ Key variables (see `.env.example`):
   `curl -N http://localhost:4000/v1/chat/completions -H "Authorization: Bearer <KEY>" -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"streaming please"}],"stream":true}'`
   4) Embeddings (defaults to Google embeddings)  
   `curl http://localhost:4000/v1/embeddings -H "Authorization: Bearer <KEY>" -H "Content-Type: application/json" -d '{"input":"embedding text"}'`
+
+## Sprint 2 verify
+- Embeddings (string):  
+  `curl http://localhost:4000/v1/embeddings -H "Authorization: Bearer <KEY>" -H "Content-Type: application/json" -d '{"input":"hello world"}'`
+- Embeddings (array):  
+  `curl http://localhost:4000/v1/embeddings -H "Authorization: Bearer <KEY>" -H "Content-Type: application/json" -d '{"input":["first","second"]}'`
+- FAST chat (default OpenAI):  
+  `curl http://localhost:4000/v1/chat/completions -H "Authorization: Bearer <KEY>" -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"fast tier"}]}'`
+- SMART chat (`x-optyx-tier: smart`):  
+  `curl http://localhost:4000/v1/chat/completions -H "Authorization: Bearer <KEY>" -H "Content-Type: application/json" -H "x-optyx-tier: smart" -d '{"messages":[{"role":"user","content":"smart tier"}]}'`
+- Failover test (export `OPTYX_FORCE_OPENAI_FAILOVER=1` then run FAST chat):  
+  `curl http://localhost:4000/v1/chat/completions -H "Authorization: Bearer <KEY>" -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"force fallback"}]}'`
+- Streaming chat:  
+  `curl -N http://localhost:4000/v1/chat/completions -H "Authorization: Bearer <KEY>" -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"stream me"}],"stream":true}'`
+
+## Local verification (Sprint 3)
+- Health: `curl http://localhost:4000/health`
+- Models: `curl http://localhost:4000/v1/models`
+- FAST chat default: `curl http://localhost:4000/v1/chat/completions -H "Authorization: Bearer <KEY>" -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"hello"}]}'`
+- SMART chat header: `curl http://localhost:4000/v1/chat/completions -H "Authorization: Bearer <KEY>" -H "Content-Type: application/json" -H "x-optyx-tier: smart" -d '{"messages":[{"role":"user","content":"smart hello"}]}'`
+- Embeddings batch: `curl http://localhost:4000/v1/embeddings -H "Authorization: Bearer <KEY>" -H "Content-Type: application/json" -d '{"input":["a","b","c"]}'`
+- Failover skipped (disabled in Sprint 3 by design)
 
 ## CI
 Basic GitHub Actions workflow at `.github/workflows/ci.yml` runs install, Prisma generate, and build.

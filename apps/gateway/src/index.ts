@@ -1,30 +1,32 @@
-import fastify, { FastifyReply, FastifyRequest } from "fastify";
+import fastify, { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import cors from "@fastify/cors";
 import dotenv from "dotenv";
 import crypto from "crypto";
-import { defaultGatewayPort } from "@optyx/shared";
+import {
+  defaultGatewayPort,
+  modelCatalog,
+  defaultFastModelId,
+  defaultSmartModelId,
+  ModelEntry,
+  modelAliases,
+} from "@optyx/shared";
 import { prisma } from "./prisma";
 import { ApiKeyStatus, Prisma } from "@prisma/client";
 import { openAIAdapter } from "./providers/openai";
 import { googleAdapter } from "./providers/google";
-import { ChatResult, ProviderAdapter, UsageTotals } from "./providers/types";
+import { ChatResult, ProviderAdapter } from "./providers/types";
 
 dotenv.config();
 
-const CHAT_MODEL_PROVIDERS: Record<string, { provider: "openai" | "google" }> = {
-  "gpt-5-nano": { provider: "openai" },
-  "gpt-5-mini": { provider: "openai" },
-  "gemini-2.0-flash-lite": { provider: "google" },
-};
-
-const DEFAULT_TIER_MODEL: Record<"FAST" | "SMART", string> = {
-  FAST: "gpt-5-nano",
-  SMART: "gpt-5-mini",
-};
-
-const FAST_FALLBACK_MODEL = "gemini-2.0-flash-lite";
+const modelCatalogById = new Map(modelCatalog.map((m) => [m.id, m]));
+const chatModelIds = modelCatalog.filter((m) => m.type === "chat").map((m) => m.id);
+const embeddingModelIds = modelCatalog.filter((m) => m.type === "embedding").map((m) => m.id);
 const EMBEDDING_DEFAULT_MODEL = "gemini-embedding-001";
-const EMBEDDING_ALLOWED = new Set([EMBEDDING_DEFAULT_MODEL]);
+const aliasReverseLookup = Object.entries(modelAliases).reduce<Record<string, string[]>>((acc, [alias, target]) => {
+  if (!acc[target]) acc[target] = [];
+  acc[target].push(alias);
+  return acc;
+}, {});
 
 const adapters: Record<"openai" | "google", ProviderAdapter> = {
   openai: openAIAdapter,
@@ -47,8 +49,6 @@ type ChatCompletionBody = {
   stream?: boolean;
   [key: string]: unknown;
 };
-
-const app = fastify({ logger: true });
 
 function hashApiKey(key: string) {
   return crypto.createHash("sha256").update(key).digest("hex");
@@ -107,6 +107,57 @@ async function apiKeyPreHandler(req: FastifyRequest, reply: FastifyReply) {
   });
 }
 
+type ProjectSettings = {
+  id: string;
+  defaultTier: "FAST" | "SMART";
+  allowedChatModels: Set<string>;
+  allowedEmbeddingModels: Set<string>;
+};
+
+function normalizeTier(input?: string | null): "FAST" | "SMART" {
+  if (!input) return "FAST";
+  const value = input.toLowerCase();
+  if (value === "smart") return "SMART";
+  return "FAST";
+}
+
+function normalizeModelId(input?: string | null) {
+  if (!input) return { canonical: null, aliasOf: null };
+  const canonical = modelAliases[input] ?? input;
+  const aliasOf = modelAliases[input] ? canonical : null;
+  return { canonical, aliasOf };
+}
+
+function getAllowedModelsSet(project: { allowedModels: any; allowAllModels: boolean }, type: "chat" | "embedding") {
+  if (project.allowAllModels) {
+    return new Set(type === "chat" ? chatModelIds : embeddingModelIds);
+  }
+  if (Array.isArray(project.allowedModels)) {
+    const normalized = (project.allowedModels as any[])
+      .map((v) => (typeof v === "string" ? v : null))
+      .filter((v): v is string => Boolean(v))
+      .map((v) => normalizeModelId(v).canonical)
+      .filter((v): v is string => Boolean(v))
+      .filter((v) => (type === "chat" ? chatModelIds.includes(v) : embeddingModelIds.includes(v)));
+    return new Set(normalized);
+  }
+  return new Set<string>();
+}
+
+async function getProjectSettings(projectId: string): Promise<ProjectSettings | null> {
+  const project = (await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { id: true, defaultTier: true, allowedModels: true, allowAllModels: true } as any,
+  })) as any;
+  if (!project) return null;
+  return {
+    id: project.id,
+    defaultTier: normalizeTier(project.defaultTier),
+    allowedChatModels: getAllowedModelsSet(project, "chat"),
+    allowedEmbeddingModels: getAllowedModelsSet(project, "embedding"),
+  };
+}
+
 async function logRequestStart(params: {
   request: FastifyRequest;
   projectId: string;
@@ -137,6 +188,21 @@ async function logRequestStart(params: {
   });
 
   return { id: log.id, baseMetadata: metadata };
+}
+
+function mergeInputJson(
+  base?: Prisma.InputJsonValue,
+  patch?: Prisma.InputJsonValue
+): Prisma.InputJsonValue | undefined {
+  const safeBase =
+    base && typeof base === "object" && !Array.isArray(base) ? base : {};
+  const safePatch =
+    patch && typeof patch === "object" && !Array.isArray(patch) ? patch : {};
+  const merged = {
+    ...(safeBase as Record<string, unknown>),
+    ...(safePatch as Record<string, unknown>),
+  };
+  return Object.keys(merged).length ? (merged as Prisma.InputJsonValue) : undefined;
 }
 
 async function logRequestFinish(
@@ -191,10 +257,20 @@ async function calculateCost(params: {
   const { provider, model, tokensIn, tokensOut } = params;
   if (tokensIn == null && tokensOut == null) return null;
 
-  const price = await prisma.providerModelPrice.findFirst({
+  let price = await prisma.providerModelPrice.findFirst({
     where: { provider, model, isActive: true },
     orderBy: { effectiveFrom: "desc" },
   });
+
+  if (!price && aliasReverseLookup[model]) {
+    for (const alias of aliasReverseLookup[model]) {
+      price = await prisma.providerModelPrice.findFirst({
+        where: { provider, model: alias, isActive: true },
+        orderBy: { effectiveFrom: "desc" },
+      });
+      if (price) break;
+    }
+  }
 
   if (!price) return null;
 
@@ -207,10 +283,6 @@ async function calculateCost(params: {
   return inputCost + outputCost;
 }
 
-function isFailoverStatus(status: number) {
-  return status === 429 || status >= 500 || status === 408;
-}
-
 function modelNotAllowedError(resultBody: any) {
   const message: string = resultBody?.error?.message ?? "";
   const type: string = resultBody?.error?.type ?? "";
@@ -220,21 +292,109 @@ function modelNotAllowedError(resultBody: any) {
   return false;
 }
 
-function mergeInputJson(
-  base?: Prisma.InputJsonValue,
-  patch?: Prisma.InputJsonValue
-): Prisma.InputJsonValue | undefined {
-  const safeBase =
-    base && typeof base === "object" && !Array.isArray(base) ? base : {};
-  const safePatch =
-    patch && typeof patch === "object" && !Array.isArray(patch) ? patch : {};
-  const merged = {
-    ...(safeBase as Record<string, unknown>),
-    ...(safePatch as Record<string, unknown>),
-  };
-  return Object.keys(merged).length ? (merged as Prisma.InputJsonValue) : undefined;
+function ensureModelAllowed(
+  modelId: string,
+  allowedModels: Set<string>,
+  type: "chat" | "embedding",
+  reply: FastifyReply
+) {
+  const entry = modelCatalogById.get(modelId);
+  if (!entry || entry.type !== type || !allowedModels.has(modelId)) {
+    reply.status(400).send({
+      error: {
+        message: "model not allowed/available",
+        type: "invalid_request_error",
+        code: "MODEL_NOT_ALLOWED",
+      },
+    });
+    return null;
+  }
+  return entry;
 }
 
+function makeMockStreamResponse(chunks: string[]): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) {
+        controller.enqueue(encoder.encode(chunk));
+      }
+      controller.close();
+    },
+  });
+  return new Response(stream, {
+    status: 200,
+    headers: { "Content-Type": "text/event-stream" },
+  });
+}
+
+function mockChatResult(params: { stream: boolean; model: string; provider: "openai" | "google" }): ChatResult {
+  if (params.stream) {
+    const chunks = [
+      `data: ${JSON.stringify({
+        id: "mock-chat",
+        object: "chat.completion.chunk",
+        model: params.model,
+        choices: [{ index: 0, delta: { content: "hello" }, finish_reason: null }],
+      })}\n\n`,
+      "data: [DONE]\n\n",
+    ];
+    const response = makeMockStreamResponse(chunks);
+    return {
+      kind: "stream",
+      provider: params.provider,
+      model: params.model,
+      response,
+      chunkToSse: (chunk: string) => ({ sse: [chunk], usage: null }),
+    };
+  }
+
+  return {
+    kind: "json",
+    provider: params.provider,
+    model: params.model,
+    status: 200,
+    body: {
+      id: "mock-chat",
+      object: "chat.completion",
+      model: params.model,
+      choices: [
+        {
+          index: 0,
+          message: { role: "assistant", content: "hello" },
+          finish_reason: "stop",
+        },
+      ],
+      usage: {
+        prompt_tokens: 5,
+        completion_tokens: 3,
+        total_tokens: 8,
+      },
+    },
+    usage: { prompt_tokens: 5, completion_tokens: 3 },
+  };
+}
+
+function mockEmbeddings(model: string) {
+  return {
+    provider: "google" as const,
+    model,
+    status: 200,
+    body: {
+      object: "list",
+      data: [
+        {
+          object: "embedding",
+          embedding: [0.1, 0.2, 0.3],
+          index: 0,
+        },
+      ],
+      model,
+      usage: { prompt_tokens: 5, total_tokens: 5 },
+    },
+    usage: { prompt_tokens: 5, completion_tokens: 0 },
+  };
+}
 async function streamToClient(params: {
   reply: FastifyReply;
   result: Extract<ChatResult, { kind: "stream" }>;
@@ -245,7 +405,6 @@ async function streamToClient(params: {
   model: string;
   fallbackUsed: boolean;
   retryCount: number;
-  metadataPatch?: Prisma.InputJsonValue;
 }) {
   const {
     reply,
@@ -257,7 +416,6 @@ async function streamToClient(params: {
     model,
     fallbackUsed,
     retryCount,
-    metadataPatch,
   } = params;
 
   if (!result.response.ok || !result.response.body) {
@@ -278,23 +436,38 @@ async function streamToClient(params: {
       model,
       fallbackUsed,
       retryCount,
-      metadataPatch,
     });
     return reply
       .status(result.response.status)
       .send(responseJson ?? { error: { message: "Upstream error" } });
   }
 
-  reply.raw.writeHead(200, {
-    "Content-Type": "text/event-stream",
+  const resolvedHeader = reply.getHeader("x-optyx-resolved-model");
+  const streamHeaders: Record<string, string> = {
+    "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-cache, no-transform",
     Connection: "keep-alive",
-  });
+  };
+  if (resolvedHeader != null) {
+    streamHeaders["x-optyx-resolved-model"] = String(resolvedHeader);
+  }
+  reply.raw.writeHead(200, streamHeaders);
+  if (typeof reply.raw.flushHeaders === "function") {
+    reply.raw.flushHeaders();
+  }
+  // Send an initial empty chunk to ensure clients receive data promptly
+  const initialChunk = {
+    object: "chat.completion.chunk",
+    model,
+    choices: [{ index: 0, delta: {}, finish_reason: null }],
+  };
+  reply.raw.write(`data: ${JSON.stringify(initialChunk)}\n\n`);
 
   const reader = result.response.body.getReader();
   const decoder = new TextDecoder();
   let tokensIn: number | null = null;
   let tokensOut: number | null = null;
+  let hasSentDone = false;
 
   try {
     // eslint-disable-next-line no-constant-condition
@@ -303,20 +476,51 @@ async function streamToClient(params: {
       if (done) break;
       if (value) {
         const chunk = decoder.decode(value, { stream: true });
-        const transformed = result.chunkToSse(chunk);
+        let transformed = result.chunkToSse(chunk);
+        if (!transformed.sse.length && chunk.trim()) {
+          transformed = {
+            sse: [`data: ${chunk.trim()}\n\n`],
+            usage: transformed.usage,
+          };
+        }
+        const rewrittenSse: string[] = [];
         for (const sse of transformed.sse) {
+          if (sse.trim().startsWith("data:") && !sse.includes("[DONE]")) {
+            const raw = sse.replace(/^data:\s*/, "").trim();
+            try {
+              const parsed = JSON.parse(raw);
+              parsed.model = model;
+              rewrittenSse.push(`data: ${JSON.stringify(parsed)}\n\n`);
+            } catch {
+              rewrittenSse.push(sse);
+            }
+          } else {
+            rewrittenSse.push(sse);
+          }
+        }
+        for (const sse of rewrittenSse) {
           reply.raw.write(sse);
+          if (sse.includes("[DONE]")) hasSentDone = true;
         }
         if (transformed.usage) {
-          if (transformed.usage.prompt_tokens != null)
-            tokensIn = transformed.usage.prompt_tokens;
-          if (transformed.usage.completion_tokens != null)
-            tokensOut = transformed.usage.completion_tokens;
+          if (transformed.usage.prompt_tokens != null) tokensIn = transformed.usage.prompt_tokens;
+          if (transformed.usage.completion_tokens != null) tokensOut = transformed.usage.completion_tokens;
+        }
+        if (!hasSentDone && chunk.includes("[DONE]")) {
+          hasSentDone = true;
         }
       }
     }
   } catch (err) {
     reply.log.error(err);
+    reply.raw.write(
+      `data: ${JSON.stringify({
+        object: "error",
+        message: "stream_failed",
+      })}\n\n`
+    );
+    reply.raw.write("data: [DONE]\n\n");
+    reply.raw.end();
     const finishedAt = new Date();
     await logRequestFinish(logId, baseMetadata, {
       status: "error",
@@ -328,13 +532,13 @@ async function streamToClient(params: {
       model,
       fallbackUsed,
       retryCount,
-      metadataPatch,
     });
-    reply.raw.end();
     return;
   }
 
-  reply.raw.write("data: [DONE]\n\n");
+  if (!hasSentDone) {
+    reply.raw.write("data: [DONE]\n\n");
+  }
   reply.raw.end();
 
   const finishedAt = new Date();
@@ -357,7 +561,6 @@ async function streamToClient(params: {
     model,
     fallbackUsed,
     retryCount,
-    metadataPatch,
   });
 }
 
@@ -371,7 +574,6 @@ async function handleChatJson(params: {
   model: string;
   fallbackUsed: boolean;
   retryCount: number;
-  metadataPatch?: Prisma.InputJsonValue;
 }) {
   const {
     reply,
@@ -383,7 +585,6 @@ async function handleChatJson(params: {
     model,
     fallbackUsed,
     retryCount,
-    metadataPatch,
   } = params;
 
   const finishedAt = new Date();
@@ -413,26 +614,75 @@ async function handleChatJson(params: {
     model,
     fallbackUsed,
     retryCount,
-    metadataPatch,
   });
+
+  const responseBody =
+    result.body != null && typeof result.body === "object"
+      ? { ...result.body, model }
+      : result.body ?? { error: { message: "Upstream error" } };
 
   reply.status(result.status);
-  reply.send(result.body ?? { error: { message: "Upstream error" } });
+  reply.send(responseBody);
 }
 
-async function start() {
-  await app.register(cors, {
-    origin: process.env.DASHBOARD_ORIGIN || "http://localhost:3000",
-  });
+function registerRoutes(app: FastifyInstance) {
+  app.get("/health", async () => ({ ok: true }));
 
-  app.get("/health", async () => {
-    return { ok: true };
+  app.get("/v1/models", async (request, reply) => {
+    const tierFilter = (request.query as any)?.tier
+      ? String((request.query as any).tier).toUpperCase()
+      : undefined;
+    const providerFilter = (request.query as any)?.provider
+      ? String((request.query as any).provider).toLowerCase()
+      : undefined;
+
+    const data: any[] = modelCatalog
+      .filter((m) => {
+        if (tierFilter && m.tierDefaultAllowed && !m.tierDefaultAllowed.includes(tierFilter as any)) return false;
+        if (providerFilter && m.provider !== providerFilter) return false;
+        return true;
+      })
+      .map((m) => ({
+        id: m.id,
+        object: "model",
+        owned_by: "optyx",
+        provider: m.provider,
+        type: m.type,
+        tierDefaultAllowed: m.tierDefaultAllowed,
+      }));
+
+    // Add alias entries
+    Object.entries(modelAliases).forEach(([alias, target]) => {
+      const entry = modelCatalogById.get(target);
+      if (!entry) return;
+      if (tierFilter && entry.tierDefaultAllowed && !entry.tierDefaultAllowed.includes(tierFilter as any)) return;
+      if (providerFilter && entry.provider !== providerFilter) return;
+      data.push({
+        id: alias,
+        object: "model",
+        owned_by: "alias",
+        provider: entry.provider,
+        type: entry.type,
+        tierDefaultAllowed: entry.tierDefaultAllowed,
+        alias_for: target,
+      });
+    });
+
+    reply.send({ object: "list", data });
   });
 
   app.post(
     "/v1/chat/completions",
     { preHandler: apiKeyPreHandler },
     async (request, reply) => {
+      if (!request.authContext) {
+        return reply.status(401).send({
+          error: {
+            message: "Unauthorized",
+            type: "invalid_request_error",
+          },
+        });
+      }
       const body = request.body as ChatCompletionBody;
 
       if (!body || !Array.isArray(body.messages)) {
@@ -444,60 +694,73 @@ async function start() {
         });
       }
 
-      const routeTagHeader = (request.headers["x-route-tag"] as
-        | string
-        | undefined)?.toLowerCase();
-      const tierHeader = (request.headers["x-optyx-tier"] as
-        | string
-        | undefined)?.toLowerCase();
-      const tier =
-        routeTagHeader === "critical" || tierHeader === "smart"
-          ? "SMART"
-          : "FAST";
-      const routeTag =
-        routeTagHeader ?? (tier === "SMART" ? "critical" : "fast");
+      const routeTagHeader = (request.headers["x-route-tag"] as string | undefined)?.toLowerCase();
+      const tierHeader = (request.headers["x-optyx-tier"] as string | undefined)?.toLowerCase();
+
+      const projectSettings = await getProjectSettings(request.authContext.projectId);
+      if (!projectSettings) {
+        return reply.status(404).send({ error: { message: "Project not found" } });
+      }
+
+      const tier = tierHeader === "smart" || routeTagHeader === "critical" ? "SMART" : projectSettings.defaultTier;
+      const routeTag = routeTagHeader ?? (tier === "SMART" ? "critical" : "fast");
 
       const requestedModel = body.model as string | undefined;
-      const logicalModel =
-        requestedModel ??
-        (tier === "SMART" ? DEFAULT_TIER_MODEL.SMART : DEFAULT_TIER_MODEL.FAST);
+      const allowedModels = projectSettings.allowedChatModels;
+      const { canonical: resolvedModel, aliasOf } = normalizeModelId(requestedModel);
 
-      if (!CHAT_MODEL_PROVIDERS[logicalModel]) {
-        return reply.status(400).send({
-          error: {
-            message:
-              "Unsupported model. Allowed: gpt-5-nano, gpt-5-mini, gemini-2.0-flash-lite",
-            type: "invalid_request_error",
-          },
-        });
+      let provider: "openai" | "google";
+      let logicalModel: string;
+      let modelEntry: ModelEntry | null = null;
+
+      if (requestedModel) {
+        if (!resolvedModel) {
+          return reply.status(400).send({
+            error: {
+              message: "model not allowed/available",
+              type: "invalid_request_error",
+              code: "MODEL_NOT_ALLOWED",
+            },
+          });
+        }
+        logicalModel = resolvedModel;
+        modelEntry = modelCatalogById.get(logicalModel) || null;
+        if (!modelEntry || modelEntry.type !== "chat" || !allowedModels.has(logicalModel)) {
+          return reply.status(400).send({
+            error: {
+              message: "model not allowed/available",
+              type: "invalid_request_error",
+              code: "MODEL_NOT_ALLOWED",
+            },
+          });
+        }
+        provider = modelEntry.provider;
+      } else {
+        logicalModel = tier === "SMART" ? defaultSmartModelId : defaultFastModelId;
+        modelEntry = ensureModelAllowed(logicalModel, allowedModels, "chat", reply);
+        if (!modelEntry) return;
+        provider = modelEntry.provider;
       }
 
-      if (!request.authContext) {
-        return reply.status(401).send({
-          error: {
-            message: "Unauthorized",
-            type: "invalid_request_error",
-          },
-        });
-      }
+      reply.header("x-optyx-resolved-model", aliasOf ? resolvedModel : logicalModel);
 
-      const primaryProvider = CHAT_MODEL_PROVIDERS[logicalModel].provider;
+      const upstreamBody = { ...body, model: logicalModel };
+
       const { id: logId, baseMetadata } = await logRequestStart({
         request,
         projectId: request.authContext.projectId,
         apiKeyId: request.authContext.apiKeyId,
         routeTag,
         tier,
-        provider: primaryProvider,
+        provider,
         model: logicalModel,
       });
 
       const startedAt = new Date();
 
-      // Ensure keys exist before making upstream calls
       if (
-        (primaryProvider === "openai" && !process.env.OPENAI_API_KEY) ||
-        (primaryProvider === "google" && !process.env.GOOGLE_API_KEY)
+        (provider === "openai" && !process.env.OPENAI_API_KEY) ||
+        (provider === "google" && !process.env.GOOGLE_API_KEY)
       ) {
         const finishedAt = new Date();
         await logRequestFinish(logId, baseMetadata, {
@@ -515,132 +778,96 @@ async function start() {
         });
       }
 
-      const adapter = adapters[primaryProvider];
+      const adapter = adapters[provider];
       let primaryResult: ChatResult | null = null;
-      let primaryError: any = null;
-      let metadataPatch: Prisma.InputJsonValue | undefined;
 
-      try {
-        primaryResult = await adapter.chatCompletions({
-          body,
-          stream: Boolean(body.stream),
+      if (process.env.GATEWAY_MOCK === "1" && upstreamBody.stream) {
+        // Manual streaming for mock mode to ensure chunks precede [DONE]
+        const resolvedHeader = reply.getHeader("x-optyx-resolved-model");
+        const streamHeaders: Record<string, string> = {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+        };
+        if (resolvedHeader != null) {
+          streamHeaders["x-optyx-resolved-model"] = String(resolvedHeader);
+        }
+        reply.raw.writeHead(200, streamHeaders);
+        if (typeof reply.raw.flushHeaders === "function") {
+          reply.raw.flushHeaders();
+        }
+        const chunk1 = {
+          id: "mock-chat",
+          object: "chat.completion.chunk",
           model: logicalModel,
+          choices: [{ index: 0, delta: { content: "A" }, finish_reason: null }],
+        };
+        const chunk2 = {
+          id: "mock-chat",
+          object: "chat.completion.chunk",
+          model: logicalModel,
+          choices: [{ index: 0, delta: { content: "B" }, finish_reason: null }],
+        };
+        const chunk3 = {
+          id: "mock-chat",
+          object: "chat.completion.chunk",
+          model: logicalModel,
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+        };
+        const flush = () => {
+          if (typeof (reply.raw as any).flush === "function") {
+            (reply.raw as any).flush();
+          }
+        };
+        reply.raw.write(`data: ${JSON.stringify(chunk1)}\n\n`);
+        flush();
+        await new Promise((r) => setTimeout(r, 5));
+        reply.raw.write(`data: ${JSON.stringify(chunk2)}\n\n`);
+        flush();
+        await new Promise((r) => setTimeout(r, 5));
+        reply.raw.write(`data: ${JSON.stringify(chunk3)}\n\n`);
+        flush();
+        await new Promise((r) => setTimeout(r, 5));
+        reply.raw.write("data: [DONE]\n\n");
+        flush();
+        reply.raw.end();
+
+        const finishedAt = new Date();
+        await logRequestFinish(logId, baseMetadata, {
+          status: "success",
+          httpStatus: 200,
+          tokensIn: 5,
+          tokensOut: 3,
+          estimatedCostUsdc: await calculateCost({
+            provider,
+            model: logicalModel,
+            tokensIn: 5,
+            tokensOut: 3,
+          }),
+          finishedAt,
+          latencyMs: finishedAt.getTime() - startedAt.getTime(),
+          provider,
+          model: logicalModel,
+          fallbackUsed: false,
+          retryCount: 0,
         });
-      } catch (err: any) {
-        primaryError = err;
+        return;
       }
 
-      const fallbackEligible =
-        tier === "FAST" && primaryProvider === "openai" && FAST_FALLBACK_MODEL;
-      let useFallback = false;
-      let fallbackResult: ChatResult | null = null;
-      const combinePatch = (next?: Prisma.InputJsonValue) => {
-        metadataPatch = mergeInputJson(metadataPatch, next);
-      };
-
-      // Determine whether to fallback (only FAST)
-      if (
-        !primaryResult ||
-        (primaryResult.kind === "json" && primaryResult.status >= 400) ||
-        (primaryResult.kind === "stream" && !primaryResult.response.ok)
-      ) {
-        const bodyPayload =
-          primaryResult && primaryResult.kind === "json" ? primaryResult.body : null;
-
-        if (
-          primaryResult &&
-          primaryResult.kind === "json" &&
-          primaryResult.status === 400 &&
-          modelNotAllowedError(primaryResult.body)
-        ) {
-          const finishedAt = new Date();
-          await logRequestFinish(logId, baseMetadata, {
-            status: "error",
-            httpStatus: primaryResult.status,
-            errorClass: "MODEL_NOT_ALLOWED",
-            finishedAt,
-            latencyMs: finishedAt.getTime() - startedAt.getTime(),
+      if (process.env.GATEWAY_MOCK === "1") {
+        primaryResult = mockChatResult({
+          stream: Boolean(upstreamBody.stream),
+          model: logicalModel,
+          provider,
+        });
+      } else {
+        try {
+          primaryResult = await adapter.chatCompletions({
+            body: upstreamBody,
+            stream: Boolean(upstreamBody.stream),
+            model: logicalModel,
           });
-          return reply.status(400).send({
-            error: {
-              message: "Requested model is not allowed by upstream provider",
-              type: "invalid_request_error",
-              code: "MODEL_NOT_ALLOWED",
-            },
-          });
-        }
-
-        if (
-          fallbackEligible &&
-          (primaryError ||
-            (primaryResult &&
-              primaryResult.kind === "json" &&
-              isFailoverStatus(primaryResult.status)) ||
-            (primaryResult &&
-              primaryResult.kind === "stream" &&
-              !primaryResult.response.ok &&
-              isFailoverStatus(primaryResult.response.status)))
-        ) {
-          useFallback = true;
-          const primaryStatus =
-            primaryResult && primaryResult.kind === "json"
-              ? primaryResult.status
-              : primaryResult && primaryResult.kind === "stream"
-              ? primaryResult.response.status
-              : 500;
-          const primaryErrorSummary =
-            bodyPayload?.error?.message ??
-            bodyPayload?.error ??
-            primaryError?.message ??
-            "unknown";
-          combinePatch({
-            fallback: {
-              from: "openai",
-              to: "google",
-              primaryStatus,
-              primaryError: primaryErrorSummary,
-            },
-          });
-
-          try {
-            fallbackResult = await adapters.google.chatCompletions({
-              body,
-              stream: Boolean(body.stream),
-              model: FAST_FALLBACK_MODEL,
-            });
-          } catch (err) {
-            fallbackResult = null;
-          }
-
-          if (!fallbackResult) {
-            const finishedAt = new Date();
-            await logRequestFinish(logId, baseMetadata, {
-              status: "error",
-              httpStatus: primaryResult && primaryResult.kind === "json"
-                ? primaryResult.status
-                : primaryResult && primaryResult.kind === "stream"
-                ? primaryResult.response.status
-                : 500,
-              errorClass: "fallback_failed",
-              finishedAt,
-              latencyMs: finishedAt.getTime() - startedAt.getTime(),
-              fallbackUsed: true,
-              retryCount: 1,
-              metadataPatch: {
-                fallback: {
-                  from: "openai",
-                  error: bodyPayload?.error ?? primaryError?.message ?? "unknown",
-                },
-              },
-            });
-            return reply.status(502).send({
-              error: {
-                message: "Primary provider failed and fallback unavailable",
-                type: "upstream_error",
-              },
-            });
-          }
-        } else if (!primaryResult) {
+        } catch (err: any) {
           const finishedAt = new Date();
           await logRequestFinish(logId, baseMetadata, {
             status: "error",
@@ -658,62 +885,58 @@ async function start() {
         }
       }
 
-      const finalResult = useFallback && fallbackResult ? fallbackResult : primaryResult;
-      const providerUsed =
-        useFallback && fallbackResult ? fallbackResult.provider : primaryResult?.provider || primaryProvider;
-      const modelUsed =
-        useFallback && fallbackResult ? fallbackResult.model : logicalModel;
-      const retryCount = useFallback ? 1 : 0;
+      const providerUsed = primaryResult.provider || provider;
+      const modelUsed = logicalModel;
+      const retryCount = 0;
+      const fallbackUsed = false;
 
-      if (!finalResult) {
+      if (
+        primaryResult.kind === "json" &&
+        primaryResult.status >= 400 &&
+        primaryResult.status < 500 &&
+        modelNotAllowedError(primaryResult.body)
+      ) {
         const finishedAt = new Date();
         await logRequestFinish(logId, baseMetadata, {
           status: "error",
-          httpStatus: 500,
-          errorClass: "upstream_unknown_failure",
+          httpStatus: primaryResult.status,
+          errorClass: "MODEL_NOT_ALLOWED",
           finishedAt,
           latencyMs: finishedAt.getTime() - startedAt.getTime(),
         });
-        return reply.status(500).send({
-          error: { message: "Upstream unavailable", type: "internal_error" },
-        });
-      }
-
-      if (useFallback) {
-        combinePatch({
-          fallback: {
-            from: primaryProvider,
-            reason: "primary_failed",
+        return reply.status(400).send({
+          error: {
+            message: "Requested model is not allowed by upstream provider",
+            type: "invalid_request_error",
+            code: "MODEL_NOT_ALLOWED",
           },
         });
       }
 
-      if (finalResult.kind === "stream") {
+      if (primaryResult.kind === "stream") {
         return streamToClient({
           reply,
-          result: finalResult,
+          result: primaryResult,
           startedAt,
           logId,
           baseMetadata,
           provider: providerUsed,
           model: modelUsed,
-          fallbackUsed: useFallback,
+          fallbackUsed,
           retryCount,
-          metadataPatch,
         });
       }
 
       return handleChatJson({
         reply,
-        result: finalResult,
+        result: primaryResult,
         startedAt,
         logId,
         baseMetadata,
         provider: providerUsed,
         model: modelUsed,
-        fallbackUsed: useFallback,
+        fallbackUsed,
         retryCount,
-        metadataPatch,
       });
     }
   );
@@ -722,22 +945,26 @@ async function start() {
     "/v1/embeddings",
     { preHandler: apiKeyPreHandler },
     async (request, reply) => {
-      const body = request.body as Record<string, any>;
-      const model = (body.model as string | undefined) ?? EMBEDDING_DEFAULT_MODEL;
-      if (!EMBEDDING_ALLOWED.has(model)) {
-        return reply.status(400).send({
-          error: {
-            message: "Unsupported embedding model. Allowed: gemini-embedding-001",
-            type: "invalid_request_error",
-          },
-        });
-      }
-
       if (!request.authContext) {
         return reply.status(401).send({
           error: { message: "Unauthorized", type: "invalid_request_error" },
         });
       }
+      const body = request.body as Record<string, any>;
+      const model = (body.model as string | undefined) ?? EMBEDDING_DEFAULT_MODEL;
+
+      const projectSettings = await getProjectSettings(request.authContext.projectId);
+      if (!projectSettings) {
+        return reply.status(404).send({ error: { message: "Project not found" } });
+      }
+
+      const embeddingAllowed = ensureModelAllowed(
+        model,
+        projectSettings.allowedEmbeddingModels,
+        "embedding",
+        reply
+      );
+      if (!embeddingAllowed) return;
 
       if (!process.env.GOOGLE_API_KEY) {
         return reply.status(500).send({
@@ -751,14 +978,18 @@ async function start() {
         apiKeyId: request.authContext.apiKeyId,
         routeTag: "embeddings",
         tier: "EMBEDDINGS",
-        provider: "google",
+        provider: embeddingAllowed.provider,
         model,
       });
       const startedAt = new Date();
 
       let result;
       try {
-        result = await googleAdapter.embeddings({ body, model });
+        if (process.env.GATEWAY_MOCK === "1") {
+          result = mockEmbeddings(model);
+        } else {
+          result = await googleAdapter.embeddings({ body, model });
+        }
       } catch (err: any) {
         const finishedAt = new Date();
         await logRequestFinish(logId, baseMetadata, {
@@ -800,7 +1031,19 @@ async function start() {
       reply.status(result.status).send(result.body);
     }
   );
+}
 
+export function buildApp() {
+  const app = fastify({ logger: true });
+  app.register(cors, {
+    origin: process.env.DASHBOARD_ORIGIN || "http://localhost:3000",
+  });
+  registerRoutes(app);
+  return app;
+}
+
+async function start() {
+  const app = buildApp();
   const port = Number(process.env.GATEWAY_PORT || defaultGatewayPort);
   const host = process.env.GATEWAY_HOST || "0.0.0.0";
 
@@ -813,4 +1056,6 @@ async function start() {
   }
 }
 
-void start();
+if (require.main === module) {
+  void start();
+}

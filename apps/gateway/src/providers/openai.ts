@@ -2,11 +2,6 @@ import { ProviderAdapter, ChatResult, UsageTotals, EmbeddingsResult } from "./ty
 
 const CHAT_URL = "https://api.openai.com/v1/chat/completions";
 
-const CHAT_MODEL_MAP: Record<string, string> = {
-  "gpt-5-nano": "gpt-4o-mini",
-  "gpt-5-mini": "gpt-4o",
-};
-
 function openAiHeaders() {
   const key = process.env.OPENAI_API_KEY;
   if (!key) {
@@ -47,14 +42,9 @@ async function chatCompletions(params: {
   stream: boolean;
   model: string;
 }): Promise<ChatResult> {
-  const upstreamModel = CHAT_MODEL_MAP[params.model];
-  if (!upstreamModel) {
-    throw new Error("Unsupported OpenAI logical model");
-  }
-
   const payload: Record<string, unknown> = {
     ...params.body,
-    model: upstreamModel,
+    model: params.model,
   };
 
   if (params.stream) {
