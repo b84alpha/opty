@@ -86,8 +86,19 @@ function parseResponsesUsage(obj: any): UsageTotals | null {
   };
 }
 
-function makeChatLikeResponse(params: { json: any; model: string }): any {
+function normalizeUsage(u: UsageTotals | null): UsageTotals | null {
+  if (!u) return null;
+  const prompt = u.prompt_tokens ?? null;
+  const completion = u.completion_tokens ?? null;
+  return {
+    prompt_tokens: prompt,
+    completion_tokens: completion,
+  };
+}
+
+function makeChatLikeResponse(params: { json: any; model: string; usage: UsageTotals | null }): any {
   const text = extractResponseText(params.json);
+  const usage = normalizeUsage(params.usage);
   return {
     id: params.json?.id ?? `resp-${Date.now()}`,
     object: "chat.completion",
@@ -100,7 +111,7 @@ function makeChatLikeResponse(params: { json: any; model: string }): any {
         finish_reason: params.json?.output?.[0]?.finish_reason ?? params.json?.finish_reason ?? "stop",
       },
     ],
-    usage: params.json?.usage ?? params.json?.output?.[0]?.usage ?? null,
+    usage,
   };
 }
 
@@ -173,13 +184,13 @@ function collectTextFromEvent(event: any): string[] {
   const texts: string[] = [];
   const walk = (node: any) => {
     if (!node || typeof node !== "object") return;
-    if (typeof node.output_text === "string" && node.output_text.trim()) {
+    if (typeof node.output_text === "string") {
       texts.push(node.output_text);
     }
-    if (typeof node.output_text_delta === "string" && node.output_text_delta.trim()) {
+    if (typeof node.output_text_delta === "string") {
       texts.push(node.output_text_delta);
     }
-    if (node.type === "output_text" && typeof node.text === "string" && node.text.trim()) {
+    if (node.type === "output_text" && typeof node.text === "string") {
       texts.push(node.text);
     }
     if (Array.isArray(node.content)) {
@@ -210,10 +221,8 @@ function chatChunksFromResponsesEvent(event: any, model: string): { sse: string[
   const usage = parseResponsesUsage(event);
   const id = event?.id ?? event?.response?.id ?? `resp-${Date.now()}`;
   const created = event?.created ?? Math.floor(Date.now() / 1000);
-  texts.forEach((text, idx) => {
-    const delta: Record<string, any> = {};
-    if (idx === 0) delta.role = "assistant";
-    delta.content = text;
+  texts.forEach((text) => {
+    const delta: Record<string, any> = { content: text };
     const payload = {
       id,
       object: "chat.completion.chunk",
@@ -231,15 +240,16 @@ function chatChunksFromResponsesEvent(event: any, model: string): { sse: string[
   });
   const finishReason = finishReasonFromResponse(event);
   if (finishReason) {
-    sse.push(
-      `data: ${JSON.stringify({
-        id,
-        object: "chat.completion.chunk",
-        created,
-        model,
-        choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
-      })}\n\n`
-    );
+    const finishPayload: any = {
+      id,
+      object: "chat.completion.chunk",
+      created,
+      model,
+      choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
+    };
+    const normUsage = normalizeUsage(usage);
+    if (normUsage) finishPayload.usage = normUsage;
+    sse.push(`data: ${JSON.stringify(finishPayload)}\n\n`);
     sse.push("data: [DONE]\n\n");
   }
   return { sse, usage };
@@ -325,6 +335,7 @@ async function chatCompletions(params: {
     let doneSent = false;
     let finishReason: "stop" | "length" | null = null;
     let sawText = false;
+    let lastUsage: UsageTotals | null = null;
     return {
       kind: "stream",
       provider: "openai",
@@ -394,7 +405,10 @@ async function chatCompletions(params: {
             };
             const converted = chatChunksFromResponsesEvent(eventForDelta, params.model);
             sse.push(...converted.sse);
-            if (converted.usage) usage = converted.usage;
+            if (converted.usage) {
+              usage = converted.usage;
+              lastUsage = converted.usage;
+            }
           } else if (pType === "response.incomplete") {
             if (parsed?.response?.incomplete_details?.reason === "max_output_tokens") {
               finishReason = "length";
@@ -433,13 +447,15 @@ async function chatCompletions(params: {
             };
             sse.push(`data: ${JSON.stringify(errPayload)}\n\n`);
           } else {
-            const finishChunk = {
+            const finishChunk: any = {
               id,
               object: "chat.completion.chunk",
               created,
               model: params.model,
               choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
             };
+            const normUsage = normalizeUsage(lastUsage);
+            if (normUsage) finishChunk.usage = normUsage;
             sse.push(`data: ${JSON.stringify(finishChunk)}\n\n`);
           }
           sse.push("data: [DONE]\n\n");
@@ -457,7 +473,7 @@ async function chatCompletions(params: {
 
   const json = await response.json();
   const usage = parseResponsesUsage(json);
-  const body = makeChatLikeResponse({ json, model: params.model });
+  const body = makeChatLikeResponse({ json, model: params.model, usage });
   const assistantText = extractResponseText(json);
   const finishReason = finishReasonFromResponse(json);
   const status =

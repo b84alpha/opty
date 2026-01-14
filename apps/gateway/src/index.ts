@@ -483,6 +483,8 @@ async function streamToClient(params: {
   if (typeof reply.raw.flushHeaders === "function") {
     reply.raw.flushHeaders();
   }
+  // send a small keepalive to open the stream promptly
+  reply.raw.write("data: \n\n");
 
   const reader = result.response.body.getReader();
   const decoder = new TextDecoder();
@@ -506,6 +508,11 @@ async function streamToClient(params: {
         }
         const rewrittenSse: string[] = [];
         for (const sse of transformed.sse) {
+          if (!sse) continue;
+          if (!sse.endsWith("\n\n")) {
+            rewrittenSse.push(sse.endsWith("\n") ? `${sse}\n` : `${sse}\n\n`);
+            continue;
+          }
           if (sse.trim().startsWith("data:") && !sse.includes("[DONE]")) {
             const raw = sse.replace(/^data:\s*/, "").trim();
             try {
@@ -521,6 +528,9 @@ async function streamToClient(params: {
         }
         for (const sse of rewrittenSse) {
           reply.raw.write(sse);
+          if (typeof (reply.raw as any).flush === "function") {
+            (reply.raw as any).flush();
+          }
           if (sse.includes("[DONE]")) hasSentDone = true;
         }
         if (transformed.usage) {
@@ -538,9 +548,13 @@ async function streamToClient(params: {
       `data: ${JSON.stringify({
         object: "error",
         message: "stream_failed",
+        type: "stream_error",
+        code: "STREAM_FAILED",
+        model,
       })}\n\n`
     );
     reply.raw.write("data: [DONE]\n\n");
+    hasSentDone = true;
     reply.raw.end();
     const finishedAt = new Date();
     await logRequestFinish(logId, baseMetadata, {
@@ -841,15 +855,27 @@ function registerRoutes(app: FastifyInstance) {
           id: "mock-chat",
           object: "chat.completion.chunk",
           model: logicalModel,
-          choices: [{ index: 0, delta: { content: "A" }, finish_reason: null }],
+          choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
         };
         const chunk2 = {
           id: "mock-chat",
           object: "chat.completion.chunk",
           model: logicalModel,
-          choices: [{ index: 0, delta: { content: "B" }, finish_reason: null }],
+          choices: [{ index: 0, delta: { content: "A" }, finish_reason: null }],
         };
         const chunk3 = {
+          id: "mock-chat",
+          object: "chat.completion.chunk",
+          model: logicalModel,
+          choices: [{ index: 0, delta: { content: "\n" }, finish_reason: null }],
+        };
+        const chunk4 = {
+          id: "mock-chat",
+          object: "chat.completion.chunk",
+          model: logicalModel,
+          choices: [{ index: 0, delta: { content: "B" }, finish_reason: null }],
+        };
+        const chunk5 = {
           id: "mock-chat",
           object: "chat.completion.chunk",
           model: logicalModel,
@@ -867,6 +893,12 @@ function registerRoutes(app: FastifyInstance) {
         flush();
         await new Promise((r) => setTimeout(r, 5));
         reply.raw.write(`data: ${JSON.stringify(chunk3)}\n\n`);
+        flush();
+        await new Promise((r) => setTimeout(r, 5));
+        reply.raw.write(`data: ${JSON.stringify(chunk4)}\n\n`);
+        flush();
+        await new Promise((r) => setTimeout(r, 5));
+        reply.raw.write(`data: ${JSON.stringify(chunk5)}\n\n`);
         flush();
         await new Promise((r) => setTimeout(r, 5));
         reply.raw.write("data: [DONE]\n\n");
@@ -1085,8 +1117,8 @@ export function buildApp() {
 
 async function start() {
   const app = buildApp();
-  const port = Number(process.env.GATEWAY_PORT || defaultGatewayPort);
-  const host = process.env.GATEWAY_HOST || "0.0.0.0";
+  const port = Number(process.env.PORT ?? process.env.GATEWAY_PORT ?? defaultGatewayPort);
+  const host = process.env.HOST ?? process.env.GATEWAY_HOST ?? "0.0.0.0";
 
   try {
     await app.listen({ port, host });

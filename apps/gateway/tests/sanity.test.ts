@@ -10,12 +10,17 @@ async function readStream(url: string, init?: RequestInit) {
   const timeout = setTimeout(() => controller.abort(), 4000);
   const res = await fetch(url, { ...init, signal: controller.signal });
   assert.strictEqual(res.status, 200);
+  const headers = res.headers;
+  assert.strictEqual(headers.get("content-type"), "text/event-stream; charset=utf-8");
+  assert.ok((headers.get("cache-control") || "").includes("no-cache"));
+  assert.ok((headers.get("connection") || "").includes("keep-alive"));
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   let gotChunk = false;
   let gotDone = false;
   let rawText = "";
   let gotError = false;
+  let sawNewline = false;
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -23,6 +28,8 @@ async function readStream(url: string, init?: RequestInit) {
       if (value) {
         const text = decoder.decode(value);
         rawText += text;
+        // ensure framing is double-newline separated
+        assert.ok(text.includes("\n\n"), "SSE framing must include blank lines");
         const lines = text
           .split("\n")
           .map((l) => l.trim())
@@ -36,6 +43,7 @@ async function readStream(url: string, init?: RequestInit) {
             line.includes("\"chat.completion.chunk\"")
           ) {
             gotChunk = true;
+            if (line.includes("\\n")) sawNewline = true;
           }
           if (line.startsWith("data: {") && line.includes("OUTPUT_TRUNCATED")) {
             gotError = true;
@@ -52,6 +60,9 @@ async function readStream(url: string, init?: RequestInit) {
   assert.strictEqual(doneCount, 1, "should emit exactly one [DONE]");
   assert.ok(gotChunk || gotError, "stream should emit data chunk or error");
   assert.ok(gotDone, "stream should emit [DONE]");
+  if (gotChunk) {
+    assert.ok(sawNewline, "stream should preserve newline content");
+  }
 }
 
 async function main() {

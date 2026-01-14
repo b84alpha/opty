@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "dev": "tsx src/index.ts",
+    "dev": "PORT=${PORT:-$GATEWAY_PORT} tsx src/index.ts",
     "build": "tsc --noEmit",
     "lint": "tsc --noEmit",
     "test": "pnpm build && node tests/run.js"

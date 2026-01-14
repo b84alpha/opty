@@ -58,13 +58,14 @@ Key variables (see `.env.example`):
 - Disable keys from `/projects/[id]/keys` when needed.
 - View request activity in `/logs` (last 100 per project).
 - Configure defaults and model allowlist in `/projects/[id]/settings`.
+- If running `pnpm dev` (turbo), do not start the gateway separately on 4000. Use `PORT` to change the gateway port when needed.
 - Gateway curl examples:
   1) FAST chat (default OpenAI) non-stream  
   `curl http://localhost:4000/v1/chat/completions -H "Authorization: Bearer <KEY>" -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"hello from fast"}],"stream":false}'`
   2) SMART chat (OpenAI smart tier)  
   `curl http://localhost:4000/v1/chat/completions -H "Authorization: Bearer <KEY>" -H "Content-Type: application/json" -H "x-optyx-tier: smart" -d '{"messages":[{"role":"user","content":"hello from smart"}],"stream":false}'`
   3) Streaming chat  
-  `curl -N http://localhost:4000/v1/chat/completions -H "Authorization: Bearer <KEY>" -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"streaming please"}],"stream":true,"max_tokens":64}'`
+  `curl -N http://localhost:4000/v1/chat/completions -H "Authorization: Bearer <KEY>" -H "Content-Type: application/json" -d '{"model":"gpt-5-nano","messages":[{"role":"user","content":"Output exactly:\\nA\\nB"}],"stream":true,"max_tokens":64}'`
   4) Embeddings (defaults to Google embeddings)  
   `curl http://localhost:4000/v1/embeddings -H "Authorization: Bearer <KEY>" -H "Content-Type: application/json" -d '{"input":"embedding text"}'`
 
@@ -89,6 +90,9 @@ Key variables (see `.env.example`):
 - SMART chat header: `curl http://localhost:4000/v1/chat/completions -H "Authorization: Bearer <KEY>" -H "Content-Type: application/json" -H "x-optyx-tier: smart" -d '{"messages":[{"role":"user","content":"smart hello"}]}'`
 - Embeddings batch: `curl http://localhost:4000/v1/embeddings -H "Authorization: Bearer <KEY>" -H "Content-Type: application/json" -d '{"input":["a","b","c"]}'`
 - Failover skipped (disabled in Sprint 3 by design)
+
+### GPT-5 notes
+- Legacy `max_tokens` is accepted for GPT-5 and mapped to `max_completion_tokens`. If the cap is too low and no text is produced, the gateway returns/streams an `OUTPUT_TRUNCATED` error (with a single `[DONE]` in streams). Increase `max_tokens` or lower reasoning effort to get text.
 
 ## CI
 Basic GitHub Actions workflow at `.github/workflows/ci.yml` runs install, Prisma generate, and build.
