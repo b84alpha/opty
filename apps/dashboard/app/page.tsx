@@ -2,15 +2,13 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { defaultGatewayPort } from "@optyx/shared";
+import { GATEWAY_URL } from "../src/lib/config";
 
 type HealthState = "idle" | "loading" | "ok" | "fail";
 
 export default function HomePage() {
   const [health, setHealth] = useState<HealthState>("idle");
-  const gatewayBase =
-    process.env.NEXT_PUBLIC_GATEWAY_URL ||
-    `http://localhost:${defaultGatewayPort}`;
+  const gatewayBase = GATEWAY_URL;
 
   const checkHealth = async () => {
     setHealth("loading");

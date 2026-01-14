@@ -102,3 +102,9 @@ Key variables (see `.env.example`):
 
 ## CI
 Basic GitHub Actions workflow at `.github/workflows/ci.yml` runs install, Prisma generate, and build.
+
+## Local dev
+- If port 4000 is free: `npm run dev`
+- Recommended stable dev (gateway on 4001, dashboard points at it): `npm run dev:4001` (sets `GATEWAY_PORT=4001` and `NEXT_PUBLIC_GATEWAY_URL=http://localhost:4001`)
+- If you see EADDRINUSE on 4000, another process is listening; Turbo will stop both apps. Find it with `lsof -nP -i :4000 -sTCP:LISTEN` (or :4001) and kill that PID.
+- zsh globbing with `[DONE]`: always quote/escape patterns, e.g. `grep '\[DONE\]' file`.
