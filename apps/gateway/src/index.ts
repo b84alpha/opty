@@ -82,6 +82,13 @@ function hashApiKey(key: string) {
   return crypto.createHash("sha256").update(key).digest("hex");
 }
 
+function generateApiKey() {
+  const raw = `optyx_${crypto.randomBytes(24).toString("hex")}`;
+  const prefix = raw.slice(0, 10);
+  const hashed = hashApiKey(raw);
+  return { raw, prefix, hashed };
+}
+
 function extractApiKey(req: FastifyRequest): string | null {
   const headerKey = (req.headers["x-api-key"] as string | undefined)?.trim();
   const authHeader = req.headers.authorization;
@@ -709,6 +716,91 @@ function registerRoutes(app: FastifyInstance) {
     });
 
     reply.send({ object: "list", data });
+  });
+
+  app.get("/admin/projects", async (_request, reply) => {
+    const projects = await prisma.project.findMany({
+      select: {
+        id: true,
+        name: true,
+        defaultTier: true,
+        allowAllModels: true,
+        allowedModels: true,
+        createdAt: true,
+      },
+    });
+    reply.send({ data: projects });
+  });
+
+  app.post("/admin/projects", async (request, reply) => {
+    const body = request.body as any;
+    if (!body?.name) {
+      return reply.status(400).send({ error: { message: "name is required" } });
+    }
+    try {
+      const project = await prisma.project.create({
+        data: {
+          name: String(body.name),
+          defaultTier: body.defaultTier?.toString().toLowerCase() === "smart" ? "smart" : "fast",
+          allowAllModels: body.allowAllModels !== false,
+          allowedModels: Array.isArray(body.allowedModels)
+            ? body.allowedModels.filter((v: any) => typeof v === "string")
+            : [],
+          org: { connect: { id: "seed-org-1" } },
+        },
+      });
+      reply.send({ project });
+    } catch (err: any) {
+      request.log.error(err);
+      reply.status(500).send({ error: { message: "failed to create project" } });
+    }
+  });
+
+  app.get("/admin/projects/:id/keys", async (request, reply) => {
+    const projectId = (request.params as any).id;
+    const keys = await prisma.apiKey.findMany({
+      where: { projectId },
+      select: {
+        id: true,
+        prefix: true,
+        status: true,
+        createdAt: true,
+        updatedAt: true,
+        lastUsedAt: true,
+      },
+    });
+    reply.send({ data: keys });
+  });
+
+  app.post("/admin/projects/:id/keys", async (request, reply) => {
+    const projectId = (request.params as any).id;
+    const project = await prisma.project.findUnique({ where: { id: projectId } });
+    if (!project) {
+      return reply.status(404).send({ error: { message: "project not found" } });
+    }
+    const { raw, prefix, hashed } = generateApiKey();
+    const created = await prisma.apiKey.create({
+      data: {
+        projectId,
+        hashedKey: hashed,
+        prefix,
+        status: ApiKeyStatus.ACTIVE,
+      },
+    });
+    reply.send({ key: raw, prefix, id: created.id });
+  });
+
+  app.post("/admin/keys/:id/revoke", async (request, reply) => {
+    const keyId = (request.params as any).id;
+    const existing = await prisma.apiKey.findUnique({ where: { id: keyId } });
+    if (!existing) {
+      return reply.status(404).send({ error: { message: "key not found" } });
+    }
+    await prisma.apiKey.update({
+      where: { id: keyId },
+      data: { status: ApiKeyStatus.DISABLED },
+    });
+    reply.send({ ok: true });
   });
 
   app.post(

@@ -124,9 +124,25 @@ async function main() {
   const models = await modelsRes.json();
   assert.ok(models.data.length >= 3);
 
+  const projectRes = await fetch(`${base}/admin/projects`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "Test Admin Project" }),
+  });
+  assert.strictEqual(projectRes.status, 200);
+  const projectJson = await projectRes.json();
+  const projectId = projectJson?.project?.id;
+  assert.ok(projectId);
+
+  const keyRes = await fetch(`${base}/admin/projects/${projectId}/keys`, { method: "POST" });
+  assert.strictEqual(keyRes.status, 200);
+  const keyJson = await keyRes.json();
+  const newKey = keyJson?.key;
+  assert.ok(newKey, "key should be returned");
+
   const aliasRes = await fetch(`${base}/v1/chat/completions`, {
     method: "POST",
-    headers,
+    headers: { ...headers, Authorization: `Bearer ${newKey}` },
     body: JSON.stringify({
       model: "gpt-5-nano",
       messages: [{ role: "user", content: "Output exactly:\nA\nB" }],
@@ -155,14 +171,14 @@ async function main() {
 
   const bad = await fetch(`${base}/v1/chat/completions`, {
     method: "POST",
-    headers,
+    headers: { ...headers, Authorization: `Bearer ${newKey}` },
     body: JSON.stringify({ model: "not-a-model", messages: [{ role: "user", content: "hi" }] }),
   });
   assert.strictEqual(bad.status, 400);
 
   await readStream(`${base}/v1/chat/completions`, {
     method: "POST",
-    headers,
+    headers: { ...headers, Authorization: `Bearer ${newKey}` },
     body: JSON.stringify({
       model: "gpt-5-nano",
       messages: [{ role: "user", content: "Output exactly:\nA\nB" }],
@@ -170,6 +186,17 @@ async function main() {
       stream: true,
     }),
   });
+
+  await fetch(`${base}/admin/keys/${keyJson?.id ?? ""}/revoke`, { method: "POST" });
+  const revokedCall = await fetch(`${base}/v1/chat/completions`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${newKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "gpt-5-nano",
+      messages: [{ role: "user", content: "still there?" }],
+    }),
+  });
+  assert.strictEqual(revokedCall.status, 401);
 
   await app.close();
   console.log("gateway sanity tests passed");
