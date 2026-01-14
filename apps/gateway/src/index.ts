@@ -361,7 +361,7 @@ function mockChatResult(params: { stream: boolean; model: string; provider: "ope
       choices: [
         {
           index: 0,
-          message: { role: "assistant", content: "hello" },
+          message: { role: "assistant", content: "A\nB" },
           finish_reason: "stop",
         },
       ],
@@ -455,13 +455,6 @@ async function streamToClient(params: {
   if (typeof reply.raw.flushHeaders === "function") {
     reply.raw.flushHeaders();
   }
-  // Send an initial empty chunk to ensure clients receive data promptly
-  const initialChunk = {
-    object: "chat.completion.chunk",
-    model,
-    choices: [{ index: 0, delta: {}, finish_reason: null }],
-  };
-  reply.raw.write(`data: ${JSON.stringify(initialChunk)}\n\n`);
 
   const reader = result.response.body.getReader();
   const decoder = new TextDecoder();

@@ -14,19 +14,28 @@ async function readStream(url: string, init?: RequestInit) {
   const decoder = new TextDecoder();
   let gotChunk = false;
   let gotDone = false;
+  let rawText = "";
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       if (value) {
         const text = decoder.decode(value);
+        rawText += text;
         const lines = text
           .split("\n")
           .map((l) => l.trim())
           .filter(Boolean);
         for (const line of lines) {
           if (line === "data: [DONE]") gotDone = true;
-          if (line.startsWith("data: {") && !line.includes("[DONE]")) gotChunk = true;
+          if (
+            line.startsWith("data: {") &&
+            !line.includes("[DONE]") &&
+            line.includes("\"content\"") &&
+            line.includes("\"chat.completion.chunk\"")
+          ) {
+            gotChunk = true;
+          }
         }
       }
       if (gotChunk && gotDone) break;
@@ -34,6 +43,9 @@ async function readStream(url: string, init?: RequestInit) {
   } finally {
     clearTimeout(timeout);
   }
+  assert.ok(!rawText.includes("event: response."), "should not leak response.* events");
+  const doneCount = (rawText.match(/\[DONE\]/g) || []).length;
+  assert.strictEqual(doneCount, 1, "should emit exactly one [DONE]");
   assert.ok(gotChunk, "stream should emit data chunk");
   assert.ok(gotDone, "stream should emit [DONE]");
 }
@@ -69,12 +81,23 @@ async function main() {
   const aliasRes = await fetch(`${base}/v1/chat/completions`, {
     method: "POST",
     headers,
-    body: JSON.stringify({ model: "gpt-5-nano", messages: [{ role: "user", content: "hi" }] }),
+    body: JSON.stringify({
+      model: "gpt-5-nano",
+      messages: [{ role: "user", content: "Output exactly:\nA\nB" }],
+    }),
   });
   assert.strictEqual(aliasRes.status, 200);
   assert.strictEqual(aliasRes.headers.get("x-optyx-resolved-model"), defaultFastModelId);
   const aliasJson = await aliasRes.json();
   assert.strictEqual(aliasJson.model, defaultFastModelId);
+  assert.ok(
+    aliasJson?.choices?.[0]?.message?.content,
+    "non-stream response should include assistant content"
+  );
+  assert.ok(
+    String(aliasJson.choices[0].message.content).length > 0,
+    "assistant content should not be empty"
+  );
 
   const bad = await fetch(`${base}/v1/chat/completions`, {
     method: "POST",
@@ -86,7 +109,11 @@ async function main() {
   await readStream(`${base}/v1/chat/completions`, {
     method: "POST",
     headers,
-    body: JSON.stringify({ messages: [{ role: "user", content: "stream" }], stream: true }),
+    body: JSON.stringify({
+      model: "gpt-5-nano",
+      messages: [{ role: "user", content: "Output exactly:\nA\nB" }],
+      stream: true,
+    }),
   });
 
   await app.close();
