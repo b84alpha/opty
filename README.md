@@ -69,6 +69,12 @@ Key variables (see `.env.example`):
   4) Embeddings (defaults to Google embeddings)  
   `curl http://localhost:4000/v1/embeddings -H "Authorization: Bearer <KEY>" -H "Content-Type: application/json" -d '{"input":"embedding text"}'`
 
+## Local dev
+- If port 4000 is free: `npm run dev`
+- Recommended stable dev (gateway on 4001, dashboard points at it): `npm run dev:4001` (sets `GATEWAY_PORT=4001` and `NEXT_PUBLIC_GATEWAY_URL=http://localhost:4001`)
+- If you see EADDRINUSE on 4000, another process is listening; Turbo will stop both apps. Find it with `lsof -nP -i :4000 -sTCP:LISTEN` (or :4001) and kill that PID.
+- zsh globbing with `[DONE]`: always quote/escape patterns, e.g. `grep '\[DONE\]' file`.
+
 ## Sprint 2 verify
 - Embeddings (string):  
   `curl http://localhost:4000/v1/embeddings -H "Authorization: Bearer <KEY>" -H "Content-Type: application/json" -d '{"input":"hello world"}'`

@@ -5,6 +5,7 @@
   "packageManager": "pnpm@8.15.4",
   "scripts": {
     "dev": "turbo run dev --parallel --filter=dashboard --filter=gateway",
+    "dev:4001": "GATEWAY_PORT=4001 NEXT_PUBLIC_GATEWAY_URL=http://localhost:4001 turbo run dev --parallel --filter=dashboard --filter=gateway",
     "build": "turbo run build",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
